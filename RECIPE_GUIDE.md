@@ -23,7 +23,7 @@ db = h5i_db.Database(cu.fresh_db("<section>_<recipe>"), create=True)
 
 Rules:
 - **Audience: professional quants.** Assume they know finance (don't explain
-  what VWAP *is* beyond one line — show how to compute it well). Explain
+  what VWAP *is* beyond one line - show how to compute it well). Explain
   h5i-db concepts on first use in that recipe.
 - Markdown cell before every code cell: *why*, not *what*. Code comments only
   where genuinely non-obvious.
@@ -48,7 +48,7 @@ trades = cu.make_trades(symbols=["AAPL","MSFT","NVDA"], days=5, trades_per_day=2
                         start="2026-06-01", seed=7)   # ts,symbol,price,size,exchange,side
 quotes = cu.make_quotes(...)                          # ts,symbol,bid,ask,bid_size,ask_size
 t, q  = cu.make_trades_and_quotes(days=3)             # shared base px; walks are
-                                                      # independent — derive trades
+                                                      # independent - derive trades
                                                       # from quotes for micro-consistent tapes
 daily = cu.make_daily_prices(symbols=[...], days=750) # ts,symbol,open,high,low,close,volume
 fx    = cu.make_fx_ticks(pairs=["EURUSD","USDJPY"], hours=72)     # ts,pair,bid,ask
@@ -61,7 +61,7 @@ bars  = cu.fetch_intraday(["SPY","QQQ"], period="30d", interval="1h")
 ```
 All tables: `ts` is `timestamp[us, tz=UTC]`, sorted ascending.
 
-Real-data calls are cached by exact argument set. These four are pre-cached —
+Real-data calls are cached by exact argument set. These four are pre-cached -
 recipes should use one of them verbatim (then subset in SQL/pandas), not
 invent new argument combinations:
 
@@ -74,7 +74,7 @@ cu.fetch_intraday(["SPY"], period="30d", interval="30m")
 
 ## h5i-db API cheatsheet
 
-**No HDF5 anywhere** — storage is immutable Parquet segments + versioned
+**No HDF5 anywhere** - storage is immutable Parquet segments + versioned
 manifests. Never describe it as HDF5-based.
 
 ```python
@@ -108,7 +108,7 @@ db.read("trades", as_of="2026-07-01T00:00:00Z")    # by commit wall-clock time
 db.read("trades", columns=["ts","price"], time_start=us, time_end=us, limit=100)
 db.restore("trades", version=3)                    # rollback = new head, history kept
 
-# Previewable mutations — start/end are raw int64 in the time column's unit (us here)
+# Previewable mutations - start/end are raw int64 in the time column's unit (us here)
 plan = db.plan_delete_range("trades", start_us, end_us, note="bad prints")
 plan = db.plan_replace_range("trades", start_us, end_us, data=fixed_table, note="...")
 plan.summary                       # {"rows_before","rows_after","rows_affected",
@@ -118,7 +118,7 @@ plan.before_sample; plan.after_sample   # pa.Table previews
 plan.apply()                       # ConflictError if head moved since planning
 plan.discard(); db.list_plans("trades")
 # Ranges are half-open [start, end) in raw time-column units. A replace plan
-# replaces the WHOLE window across all rows in it — replacement data must carry
+# replaces the WHOLE window across all rows in it - replacement data must carry
 # the innocent rows through. Plans expire after 7 days (raw["expires_at_ns"]).
 # plan_* are the ONLY delete/replace paths in Python (no direct methods exist);
 # a replace plan with an empty data table silently becomes op 'delete_range'.
@@ -135,7 +135,7 @@ db.snapshot("eod-2026-07-21", tables=["trades"], note="EOD risk cut")
 # (create-only: there is no list-snapshots call in the Python API)
 db.compact("trades")               # merge small segments (do this after many small appends)
 db.vacuum(apply=False)             # dry-run space reclaim; verify(deep=True) checks checksums
-# vacuum NEVER prunes committed version history — every version stays readable.
+# vacuum NEVER prunes committed version history - every version stays readable.
 # It only reclaims truly unreferenced objects (e.g. discarded-plan staging
 # segments), and only ones older than grace_seconds.
 db.close()
@@ -154,7 +154,7 @@ SELECT * FROM h5i('trades', 42);
 SELECT * FROM h5i('trades', '2026-07-01T00:00:00Z');
 SELECT * FROM h5i('trades', 'eod-2026-07-21');
 
--- OHLCV + VWAP rollup (streams on sorted storage — no sort)
+-- OHLCV + VWAP rollup (streams on sorted storage - no sort)
 SELECT time_bucket('5m', ts) AS bar, symbol,
        first_value(price ORDER BY ts) AS open, max(price) AS high,
        min(price) AS low,  last_value(price ORDER BY ts) AS close,
@@ -170,7 +170,7 @@ SELECT * FROM asof_join('trades', 'quotes', 'ts', 'ts', 'symbol');
 -- (tolerance in raw time units = us). Keyword form also works:
 --   FROM trades ASOF JOIN quotes MATCH_CONDITION (trades.ts >= quotes.ts)
 --     ON trades.symbol = quotes.symbol
--- (bare table names only — aliases are rejected by the planner)
+-- (bare table names only - aliases are rejected by the planner)
 -- Unmatched left rows keep NULLs; colliding right columns get _right suffix.
 -- String-family by-keys coerce across encodings (utf8 / large_string /
 -- dictionary), so pandas-built tables join stored ones directly; other
@@ -178,12 +178,12 @@ SELECT * FROM asof_join('trades', 'quotes', 'ts', 'ts', 'symbol');
 -- Hygiene worth keeping in any ASOF pipeline: assert len(output) ==
 -- len(left) (a LEFT ASOF join is 1:1 with its left side) and cross-check
 -- one row against a point query. (Builds before 2026-07-23 silently
--- truncated joins beyond 8,192 rows per side — upgrade if you see that.)
+-- truncated joins beyond 8,192 rows per side - upgrade if you see that.)
 
 -- Regular grids for illiquid series: step is raw units (us!), fill mode:
 SELECT * FROM gapfill('bars_1m', 'ts', 60000000, 'locf');      -- also 'null','interpolate'
 -- resample(...) is an exact alias; <= 1M generated rows.
--- CAUTION: gapfill has NO per-key grouping — on a multi-symbol table locf
+-- CAUTION: gapfill has NO per-key grouping - on a multi-symbol table locf
 -- carries whichever symbol last ticked. Gapfill single-instrument tables (or
 -- filter into one first). 'null' mode only emits values where an observation
 -- lands exactly on a grid instant.
@@ -194,20 +194,20 @@ SELECT ts, symbol, price,
        rolling_avg(price, ts, 20) AS ma20,          -- sugar; also rolling_sum/min/max
        lag(price) OVER (PARTITION BY symbol ORDER BY ts) AS prev_px
 FROM trades;
--- CAUTION: rolling_* sugar is NOT partitioned — it is a trailing n-ROW window
+-- CAUTION: rolling_* sugar is NOT partitioned - it is a trailing n-ROW window
 -- in global time order, so on a multi-symbol table it mixes symbols. Use it on
 -- single-symbol subsets only; for per-symbol windows write the explicit
 -- AVG(x) OVER (PARTITION BY symbol ORDER BY ts ROWS BETWEEN n-1 PRECEDING AND CURRENT ROW).
 -- rolling_* also cannot take its own OVER clause.
 
--- Streaming tail (unbounded — ALWAYS use LIMIT in notebooks)
+-- Streaming tail (unbounded - ALWAYS use LIMIT in notebooks)
 SELECT * FROM tail('trades', 5, 50) LIMIT 100;   -- versions after 5, poll 50ms
 -- tail requires a PURE-APPEND version chain: any delete/replace/restore/write
 -- in the range makes it error with an informative hint. Use append-only tables
--- for streaming demos. tail BLOCKS until LIMIT rows arrive — if LIMIT exceeds
+-- for streaming demos. tail BLOCKS until LIMIT rows arrive - if LIMIT exceeds
 -- what's available it polls until the query timeout= fires (TimeoutError), so
 -- size LIMIT from versions() row deltas and pass a timeout as a backstop.
--- Aggregations can't run directly over the unbounded stream — consume rows
+-- Aggregations can't run directly over the unbounded stream - consume rows
 -- first, aggregate client-side.
 ```
 
@@ -219,7 +219,7 @@ Gotchas:
 - `ts` columns are `timestamp[us, UTC]` → every raw-unit argument
   (plan ranges, gapfill step, asof tolerance, read time_start/end) is
   **microseconds**. `int(pd.Timestamp("2026-06-02", tz="UTC").value // 1000)`.
-- `append` requires strictly ordered data — later timestamps than what's
+- `append` requires strictly ordered data - later timestamps than what's
   stored. Simulating multi-day feeds: append day by day, in order.
 - `append` enforces the *full* `sort_key`, not just the time column: with
   `sort_key=["ts","symbol"]`, data must be sorted by ts *then* symbol
@@ -228,6 +228,6 @@ Gotchas:
 - String literals in SQL use single quotes; identifiers are case-insensitive.
 - `last_value(x ORDER BY ts)` inside GROUP BY is the h5i/DataFusion idiom for
   "closing" values (no need for self-joins).
-- Batch appends (one commit per chunk of rows, not per row) — every commit
+- Batch appends (one commit per chunk of rows, not per row) - every commit
   writes a manifest. After many small appends, `db.compact(...)`.
 ```

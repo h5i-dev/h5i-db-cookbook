@@ -1,7 +1,7 @@
 # %% [markdown]
 # # Time travel and versioning: which version did my backtest see?
 #
-# Every write to an h5i-db table — append, write, delete, restore — is an
+# Every write to an h5i-db table - append, write, delete, restore - is an
 # atomic commit that produces a new immutable version. Old versions are never
 # rewritten; reading one is O(1) manifest lookup, not a log replay. For quant
 # work this is the difference between "the backtest ran on *some* state of the
@@ -11,7 +11,7 @@
 #
 # 1. the anatomy of `versions()`,
 # 2. three ways to time-travel: version number, commit wall-clock time
-#    (`as_of`), and named snapshot — in Python and in SQL,
+#    (`as_of`), and named snapshot - in Python and in SQL,
 # 3. a vendor restatement done as a `write()` with an audit note, and a SQL
 #    diff between the two versions,
 # 4. `restore()` as a rollback that *adds* history instead of erasing it.
@@ -28,7 +28,7 @@ db = h5i_db.Database(cu.fresh_db("00_timetravel"), create=True)
 # %% [markdown]
 # ## 1. Load a daily price panel in three tranches
 #
-# A 120-day, 10-name daily OHLCV panel, appended in three 40-day tranches —
+# A 120-day, 10-name daily OHLCV panel, appended in three 40-day tranches -
 # the way a real price file grows, one delivery at a time. `note=` attaches a
 # human-readable label to the commit; it shows up in `versions()` and is the
 # cheapest audit trail you will ever build.
@@ -49,7 +49,7 @@ db.append("prices", prices.slice(2 * (n // 3)), note="vendor delivery: days 81-1
 # `read`/`h5i()`, `op` is what happened (`create`, `append`, `write`,
 # `delete_range`, `replace_range`, `restore`, `compact`), `committed_at_ns`
 # is the wall-clock commit time, and `rows`/`bytes`/`segments` describe the
-# table *as of that version* — not the delta.
+# table *as of that version* - not the delta.
 
 # %%
 hist = pd.DataFrame(db.versions("prices"))
@@ -59,11 +59,11 @@ hist[["sequence", "op", "committed_at", "rows", "segments", "note"]]
 # %% [markdown]
 # ## 3. Three ways to time-travel
 #
-# - **By version number** — exact, the one to persist in run metadata.
-# - **By commit time** (`as_of`, RFC 3339) — "what did we know at 9am?".
+# - **By version number** - exact, the one to persist in run metadata.
+# - **By commit time** (`as_of`, RFC 3339) - "what did we know at 9am?".
 #   It resolves to the last version committed at or before that instant.
 # - **In SQL** via the `h5i()` table function, which accepts either form
-#   (and snapshot names, see section 6) — so old and new states can meet in
+#   (and snapshot names, see section 6) - so old and new states can meet in
 #   one query.
 
 # %%
@@ -93,7 +93,7 @@ db.sql(
 #
 # First, a toy "backtest": the annualized mean daily return per symbol,
 # computed straight off the live table. We record the head version alongside
-# the result — this is the habit the whole recipe is arguing for.
+# the result - this is the habit the whole recipe is arguing for.
 
 # %%
 def backtest_mean_return(read_point: str) -> pd.DataFrame:
@@ -120,7 +120,7 @@ result_original.head(3)
 # Now the vendor restates day-2 closes (a bad closing auction print, say,
 # corrected by +0.25%). The idiomatic move is a `write()` of the full
 # corrected panel with a note: `write` replaces the table contents *as a new
-# version* — the pre-restatement table is still there, one integer away.
+# version* - the pre-restatement table is still there, one integer away.
 
 # %%
 df = prices.to_pandas()
@@ -134,7 +134,7 @@ print(f"restatement committed as version {v_post}")
 
 # %% [markdown]
 # What exactly changed? Join the two versions in one SQL statement. No
-# export, no second database — `h5i()` puts both states in the same query.
+# export, no second database - `h5i()` puts both states in the same query.
 
 # %%
 db.sql(
@@ -151,7 +151,7 @@ db.sql(
 ).to_pandas()
 
 # %% [markdown]
-# The restatement changes the backtest — slightly, silently, and
+# The restatement changes the backtest - slightly, silently, and
 # irreversibly if you had overwritten a CSV. Here, re-running against the
 # *pinned* version reproduces the original numbers exactly.
 
@@ -169,7 +169,7 @@ assert pinned == 0.0
 # ## 5. `restore()`: rollback that adds history
 #
 # Suppose the restatement turns out to have been applied to the wrong day.
-# `restore(version)` makes an old version the new head — as a *new commit*.
+# `restore(version)` makes an old version the new head - as a *new commit*.
 # Nothing is erased: the bad write stays in the log, attributable and
 # diffable, which is exactly what you want when someone asks "who changed
 # the price file last Tuesday?".
@@ -190,7 +190,7 @@ print("head content == version", v_pre)
 #
 # Version numbers are precise but anonymous. `snapshot(name)` pins the
 # current version of chosen tables under a name you can put in a run
-# registry, an email, or a compliance report — and query directly from SQL.
+# registry, an email, or a compliance report - and query directly from SQL.
 
 # %%
 db.snapshot("model-run-2026-07-21", tables=["prices"], note="momentum study, run 42")
@@ -217,7 +217,7 @@ db.sql(
 #   thing being rolled back.
 # - The habit that pays for all of it: **record the version number next to
 #   every research result.** Re-running pinned is then bit-for-bit
-#   reproducible — see recipe `03_risk_and_production/02` for the full
+#   reproducible - see recipe `03_risk_and_production/02` for the full
 #   pattern.
 
 # %%

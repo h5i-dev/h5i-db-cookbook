@@ -1,16 +1,16 @@
 # %% [markdown]
-# # Maintenance: verify, compact, vacuum — keeping a versioned store healthy
+# # Maintenance: verify, compact, vacuum - keeping a versioned store healthy
 #
 # A versioned database makes an unusual bargain: it never overwrites data, so
-# it accumulates — manifests, segments, history. That is the feature. But it
+# it accumulates - manifests, segments, history. That is the feature. But it
 # means three maintenance questions need honest answers:
 #
 # 1. **Is the data intact?** `verify()` walks the manifest checksum chain;
 #    `verify(deep=True)` re-checksums every stored byte.
 # 2. **Why did queries get slower?** Streaming ingestion leaves many small
-#    Parquet segments; `compact()` merges them into one — as a new version.
+#    Parquet segments; `compact()` merges them into one - as a new version.
 # 3. **Where did my disk go, and what can I get back?** `vacuum()` reclaims
-#    *unreferenced* objects only. We test — rather than assume — what that
+#    *unreferenced* objects only. We test - rather than assume - what that
 #    means for old versions.
 #
 # The dataset is deliberately mistreated: a week of ticks appended in 150
@@ -29,7 +29,7 @@ db = h5i_db.Database(cu.fresh_db("00_maintenance"), create=True)
 
 
 def du_mb(path: str) -> float:
-    """Directory size in MiB — the du -s of this recipe."""
+    """Directory size in MiB - the du -s of this recipe."""
     return sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file()) / 2**20
 
 
@@ -47,7 +47,7 @@ def bench(fn, repeat: int = 3) -> float:
 # ## 1. Simulate an unbatched writer: 150 tiny commits
 #
 # Every commit writes a manifest and at least one segment. 150 appends of
-# ~2,000 rows leave the table with 150 small Parquet files — each one a file
+# ~2,000 rows leave the table with 150 small Parquet files - each one a file
 # open, a footer parse, and a merge step for every query that follows.
 
 # %%
@@ -67,12 +67,12 @@ print(f"{head['rows']:,} rows across {head['segments']} segments, "
 # %% [markdown]
 # ## 2. `verify()`: the checksum chain
 #
-# Shallow `verify` checks the table's manifest chain — each manifest commits
+# Shallow `verify` checks the table's manifest chain - each manifest commits
 # to its predecessor and to every segment it references, so a truncated
 # file, a lost commit, or a tampered manifest breaks the chain. It reads
 # metadata only (`bytes_checked: 0`), so it is cheap enough to run on every
 # open. `deep=True` additionally re-reads and re-checksums every segment
-# byte — the periodic bit-rot audit, priced accordingly.
+# byte - the periodic bit-rot audit, priced accordingly.
 
 # %%
 print("shallow:", db.verify("trades"))
@@ -87,7 +87,7 @@ print("deep   :", db.verify("trades", deep=True))
 #
 # Time a representative aggregation against the 150-segment table, compact,
 # and time it again. Compaction rewrites the *same rows* into one
-# well-sized segment and commits the result as a new version — history is
+# well-sized segment and commits the result as a new version - history is
 # untouched, so this is safe to run whenever ingestion leaves debris.
 
 # %%
@@ -107,7 +107,7 @@ print(f"\n5m-bar rollup: {t_before * 1e3:.1f} ms on 150 segments "
       f"-> {t_after * 1e3:.1f} ms on 1 segment  ({t_before / t_after:.1f}x)")
 
 # %% [markdown]
-# Two honest observations. First, the speedup here is real but modest —
+# Two honest observations. First, the speedup here is real but modest -
 # per-segment overhead scales with segment count, so a day of per-tick
 # commits (tens of thousands of segments) hurts far more than our 150.
 # Second, the directory *grew*: the 150 old segments are still referenced
@@ -121,11 +121,11 @@ v75 = db.read("trades", version=75)
 print(f"version 75 still readable: {len(v75):,} rows (head has {head['rows']:,})")
 
 # %% [markdown]
-# ## 4. `vacuum()`: what it does — and does not — reclaim
+# ## 4. `vacuum()`: what it does - and does not - reclaim
 #
 # The natural fear is that vacuum trades history for disk. Test it instead
-# of assuming: a dry run (`apply=False`) with `grace_seconds=0` — the most
-# aggressive setting — right after compacting.
+# of assuming: a dry run (`apply=False`) with `grace_seconds=0` - the most
+# aggressive setting - right after compacting.
 
 # %%
 db.vacuum("trades", grace_seconds=0, apply=False)
@@ -134,7 +134,7 @@ db.vacuum("trades", grace_seconds=0, apply=False)
 # **Zero candidates.** Every one of those 151 segments is referenced by some
 # version's manifest, and vacuum only ever collects *unreferenced* objects:
 # staging files from discarded mutation plans, debris from interrupted
-# ingests. In this build, vacuum never prunes version history — every
+# ingests. In this build, vacuum never prunes version history - every
 # version stays readable no matter how aggressively you vacuum. Retention
 # is a policy decision it refuses to make implicitly, which is the correct
 # default for anything auditors may ask about.
@@ -158,7 +158,7 @@ print("dry run, grace_seconds=0   :", db.vacuum("trades", grace_seconds=0, apply
 # The default one-hour grace period hides the orphan: vacuum will not touch
 # young files, because a file that looks unreferenced *right now* might be
 # part of a commit another process is seconds away from publishing. Only
-# `grace_seconds=0` — safe here, since nothing else is writing — exposes
+# `grace_seconds=0` - safe here, since nothing else is writing - exposes
 # the discarded plan's segment as a candidate. Reclaim it for real:
 
 # %%
@@ -180,7 +180,7 @@ print(f"all {len(versions)} versions still readable after vacuum; "
 # ## 5. Snapshots: named, checksummed pins
 #
 # Since vacuum never eats history here, snapshots are not a defensive
-# necessity — their maintenance role is different. `snapshot(name)` records
+# necessity - their maintenance role is different. `snapshot(name)` records
 # the head version of chosen tables *plus the manifest checksum* under a
 # durable name: a read point humans can cite ("the EOD cut") and an
 # integrity anchor you can later re-verify against. Pending mutation plans
@@ -198,7 +198,7 @@ db.sql("SELECT count(*) AS rows FROM h5i('trades', 'eod-2026-06-05')").to_pandas
 # %% [markdown]
 # ## A maintenance cadence that works
 #
-# - **Every open / hourly**: shallow `verify` — metadata-only, effectively free.
+# - **Every open / hourly**: shallow `verify` - metadata-only, effectively free.
 # - **After each ingestion session**: `compact` tables that streamed in as
 #   many small commits (recipe 07's batch-size guidance reduces the need).
 # - **Daily, off-hours**: `vacuum(apply=False)`, review the candidate list,
@@ -214,13 +214,13 @@ db.sql("SELECT count(*) AS rows FROM h5i('trades', 'eod-2026-06-05')").to_pandas
 # - Small commits are a *query* tax, not just a storage tax: `compact()`
 #   merged 150 segments into 1 as an ordinary new version, with measurable
 #   speedup and zero history lost.
-# - `vacuum()` collects unreferenced objects only — discarded plan staging,
+# - `vacuum()` collects unreferenced objects only - discarded plan staging,
 #   interrupted-write debris. We verified that even `grace_seconds=0,
 #   apply=True` leaves every historical version readable: history pruning is
 #   simply not something vacuum does in this build.
 # - The grace period is crash-safety for concurrent writers; zero it only in
 #   single-writer maintenance windows.
-# - Snapshots are named, checksummed read points — the citable artifact for
+# - Snapshots are named, checksummed read points - the citable artifact for
 #   EOD cuts and attestations, not a vacuum workaround.
 
 # %%

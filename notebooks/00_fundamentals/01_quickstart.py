@@ -3,7 +3,7 @@
 #
 # h5i-db is an embedded, versioned time-series database built for quant
 # workloads: every write is an atomic commit producing an immutable version,
-# and the SQL layer (Apache DataFusion) ships native time-series operators —
+# and the SQL layer (Apache DataFusion) ships native time-series operators -
 # `time_bucket`, `vwap`, `ewma`, ASOF joins, gapfill. There is no server to
 # run: the database is a directory, like SQLite or DuckDB.
 #
@@ -26,7 +26,7 @@ print("h5i-db version:", h5i_db.__version__)
 # ## 1. Create a database and a table
 #
 # A `Database` is a directory on disk. Tables are declared with an Arrow
-# schema plus a `time_column` — h5i-db stores segments sorted by that column
+# schema plus a `time_column` - h5i-db stores segments sorted by that column
 # and uses it for pruning, ASOF joins and bar rollups. The `sort_key` adds a
 # secondary sort (symbol within each timestamp); it must start with the time
 # column.
@@ -51,7 +51,7 @@ db.tables()
 # ## 2. Ingest tick data
 #
 # `append` takes any pyarrow Table / RecordBatch. It is *strict*: data must be
-# time-sorted and start at or after the table's current max timestamp — feed
+# time-sorted and start at or after the table's current max timestamp - feed
 # semantics, not upsert semantics. Each call is one atomic commit that
 # produces a new immutable version.
 
@@ -64,7 +64,7 @@ commit
 # ## 3. Query it with SQL
 #
 # Full SQL via DataFusion, plus finance-native operators. One statement turns
-# 100k+ ticks into minute bars with VWAP — and because segments are stored
+# 100k+ ticks into minute bars with VWAP - and because segments are stored
 # time-sorted, this streams instead of sorting.
 
 # %%
@@ -101,7 +101,7 @@ fig.tight_layout()
 # ## 4. Versions and time travel
 #
 # Every commit is listed in `versions()`. Append another day of data, then
-# read the table *as it was before* — an O(1) operation, not a replay.
+# read the table *as it was before* - an O(1) operation, not a replay.
 
 # %%
 day4 = cu.make_trades(symbols=["AAPL", "MSFT", "NVDA"], days=1, start="2026-06-04", seed=8)
@@ -119,7 +119,7 @@ latest = db.sql("SELECT count(*) AS n FROM trades").to_pandas()["n"][0]
 print(f"version 1: {v1_rows:,} rows\nversion 2: {v2_rows:,} rows\nlatest:    {latest:,} rows")
 
 # %% [markdown]
-# Time travel works inside SQL too, via the `h5i()` table function — query an
+# Time travel works inside SQL too, via the `h5i()` table function - query an
 # old version and the live table in the same statement:
 
 # %%
@@ -139,12 +139,12 @@ db.sql(
 # ## Takeaways
 #
 # - A database is a directory; a table is an Arrow schema + a time column.
-#   No server, no daemon — `pip install`, `Database(path, create=True)`, done.
+#   No server, no daemon - `pip install`, `Database(path, create=True)`, done.
 # - `append` is an atomic commit with feed semantics (strictly ordered in
 #   time). Bad ingest? Every previous version is still there.
 # - One SQL statement gets you OHLCV + VWAP bars, streaming on sorted storage.
 # - Time travel is first-class: `db.read(v)` in Python, `h5i('table', v)` in
-#   SQL, both O(1). This becomes the backbone of reproducible research —
+#   SQL, both O(1). This becomes the backbone of reproducible research -
 #   see recipe 05.
 
 # %%

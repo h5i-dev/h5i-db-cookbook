@@ -4,14 +4,14 @@
 # Almost every execution and alpha model conditions on time of day: volume
 # concentrates at the open and close, volatility peaks in the first hour,
 # spreads narrow through the morning. Measuring these curves correctly is a
-# timezone problem before it is a statistics problem — "09:30 New York"
+# timezone problem before it is a statistics problem - "09:30 New York"
 # drifts against UTC at every DST transition, and a naive `EXTRACT(hour)`
 # on UTC timestamps smears buckets by an hour twice a year. h5i-db's
 # `time_bucket` takes an IANA timezone as its third argument, so buckets
 # align to *wall-clock* time in that zone, DST included.
 #
 # We measure the curves twice: on synthetic tick data (where we know which
-# effects the generator does and does not contain — honesty checkpoint), and
+# effects the generator does and does not contain - honesty checkpoint), and
 # on real SPY/QQQ hourly bars.
 
 # %%
@@ -46,7 +46,7 @@ db.append("bars_1h", bars, note="real SPY/QQQ hourly bars")
 #
 # `time_bucket('30m', ts, 'America/New_York')` anchors bucket boundaries to
 # NY wall-clock time. Within one June week that is indistinguishable from
-# UTC bucketing — but across the March/November DST transitions the NY
+# UTC bucketing - but across the March/November DST transitions the NY
 # buckets stay pinned to 09:30, 10:00, ... while UTC buckets would shift by
 # an hour mid-sample and split every time-of-day average into two blurred
 # populations. Same query, correct all year. The wall-clock label comes from
@@ -84,7 +84,7 @@ ax.legend()
 fig.tight_layout()
 
 # %% [markdown]
-# The U-shape is pronounced — by construction: the generator concentrates
+# The U-shape is pronounced - by construction: the generator concentrates
 # 40% of arrivals near the open and 20% near the close, mimicking the real
 # pattern. The useful summary numbers for an execution scheduler:
 
@@ -99,7 +99,7 @@ first_last = pd.DataFrame(
 (first_last * 100).round(1)
 
 # %% [markdown]
-# ## 3. Volatility and spreads by time of day — an honest null
+# ## 3. Volatility and spreads by time of day - an honest null
 #
 # The same bucketing applied to 30-minute bar returns (volatility smile) and
 # quoted spreads. Here the synthetic data *cannot* show the real-world
@@ -107,7 +107,7 @@ first_last = pd.DataFrame(
 # a homogeneous diffusion in calendar time (variance ∝ elapsed time,
 # regardless of trade intensity) and its spread is drawn once per
 # symbol-day. So the honest expectation is a *flat* volatility curve and a
-# *flat* spread curve — which is what we get, and a useful placebo: any
+# *flat* spread curve - which is what we get, and a useful placebo: any
 # curvature the pipeline showed here would be a bug in the pipeline.
 
 # %%
@@ -160,7 +160,7 @@ pd.DataFrame(
 # buckets, and the spread column is constant to the basis point. The method
 # is validated; the effect is absent from this generator. Real markets show
 # ~2-3x first-hour volatility and spreads that start wide and tighten within
-# minutes — the volatility half of that is next, from real data.
+# minutes - the volatility half of that is next, from real data.
 #
 # One more timezone note while we are here: with `'1d'` widths the timezone
 # argument controls where the *day* boundary falls. For a 24h asset class
@@ -182,7 +182,7 @@ db.sql(
 # %% [markdown]
 # For US equities the session sits inside one UTC day, so both groupings
 # agree and only the labels differ (NY midnight = 04:00 UTC). For FX or
-# crypto flowing through 00:00 UTC, the choice changes every daily number —
+# crypto flowing through 00:00 UTC, the choice changes every daily number -
 # see the 24/7 markets recipe.
 #
 # ## 4. The real thing: SPY and QQQ, 60 days of hourly bars
@@ -190,7 +190,7 @@ db.sql(
 # Returns per bar via `lag()` in SQL, then the same wall-clock grouping.
 # One caveat kept honest: this cached sample (late April to July) does not
 # straddle a DST transition, so UTC bucketing would happen to work here too
-# — the NY-anchored version is the one that keeps working in March.
+# - the NY-anchored version is the one that keeps working in March.
 
 # %%
 real = db.sql(
@@ -233,7 +233,7 @@ print("SPY first-hour volume share: {:.1%}   last-hour: {:.1%}".format(
 # The real curves deliver what the synthetic ticks could not: the U-shaped
 # volume profile *and* an elevated post-open volatility that decays into
 # midday (the 09:30 bar is excluded from the smile since its `lag()` return
-# spans the overnight gap — a classic subtlety worth encoding in the
+# spans the overnight gap - a classic subtlety worth encoding in the
 # pipeline, not in a footnote).
 #
 # ## Takeaways
@@ -242,7 +242,7 @@ print("SPY first-hour volume share: {:.1%}   last-hour: {:.1%}".format(
 #   build time-of-day statistics: buckets pin to wall-clock sessions, so
 #   March and November do not smear your seasonal curves. With `'1d'` widths
 #   the same argument decides where the trading day starts.
-# - The whole pipeline is two GROUP BY queries per curve — volume, bar
+# - The whole pipeline is two GROUP BY queries per curve - volume, bar
 #   returns, and spreads each collapse from hundreds of thousands of ticks
 #   to a few dozen buckets inside the database.
 # - Synthetic data is a placebo, not a substitute: it reproduced the volume

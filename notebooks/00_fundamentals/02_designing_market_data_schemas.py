@@ -4,8 +4,8 @@
 # In h5i-db a table is an Arrow schema plus a time column, persisted as
 # immutable, time-sorted Parquet segments under versioned manifests. That
 # makes schema design the one decision you cannot cheaply revisit: the types
-# you pick determine storage size, which SQL operators apply cleanly, and —
-# through `time_column` and `sort_key` — how well scans prune and how fast
+# you pick determine storage size, which SQL operators apply cleanly, and -
+# through `time_column` and `sort_key` - how well scans prune and how fast
 # ASOF joins and bar rollups run. This recipe designs the three tables every
 # equity desk starts with (ticks, quotes, daily bars), explains each type
 # choice, and then probes the *strict append contract*: what h5i-db rejects
@@ -25,23 +25,23 @@ db = h5i_db.Database(cu.fresh_db("00_schemas"), create=True)
 #
 # The decisions that matter, column by column:
 #
-# - **`ts` — `timestamp[us, tz=UTC]`, non-nullable.** Microseconds cover
+# - **`ts` - `timestamp[us, tz=UTC]`, non-nullable.** Microseconds cover
 #   consolidated-feed granularity; tz-aware UTC removes a whole class of
 #   DST bugs (convert to exchange time at query time with `time_bucket`'s
 #   timezone argument, not at storage time). Make it non-nullable: a print
 #   without a timestamp is not data. Every raw-unit argument elsewhere in
 #   the API (plan ranges, gapfill steps, ASOF tolerances) is then in
 #   microseconds, consistently.
-# - **`price` — `float64`.** The classic tradeoff: `decimal128` is exact and
+# - **`price` - `float64`.** The classic tradeoff: `decimal128` is exact and
 #   the right call in a settlement ledger, but float64 round-trips cent-grid
 #   equity prices exactly up to ~$10^13$, is what every analytics function
 #   (`vwap`, `ewma`, `stddev`, `corr`) expects, and is twice as compact.
 #   At the research layer, float64 is the convention; keep decimals for
 #   books and records systems.
-# - **`size` — `int64`.** Never float: share counts are integers, and int64
+# - **`size` - `int64`.** Never float: share counts are integers, and int64
 #   headroom means one type for everything from odd lots to index rebalance
 #   crosses.
-# - **`symbol`, `exchange`, `side` — `utf8`.** Low-cardinality strings are
+# - **`symbol`, `exchange`, `side` - `utf8`.** Low-cardinality strings are
 #   dictionary-encoded inside the Parquet segments automatically, so plain
 #   `utf8` at the schema layer costs almost nothing on disk and keeps the
 #   schema simple.
@@ -84,7 +84,7 @@ bars_1d_schema = pa.schema(
 # %% [markdown]
 # ## 2. `time_column` and `sort_key`
 #
-# Declaring `time_column="ts"` is not metadata decoration — it is the
+# Declaring `time_column="ts"` is not metadata decoration - it is the
 # contract h5i-db builds everything on:
 #
 # - segments are stored **sorted by `ts`**, and each segment's time range is
@@ -96,7 +96,7 @@ bars_1d_schema = pa.schema(
 #   than everything stored" is well defined.
 #
 # `sort_key=["ts", "symbol"]` adds a secondary order *within* each timestamp
-# tie — and, more importantly, groups rows so per-symbol scans touch
+# tie - and, more importantly, groups rows so per-symbol scans touch
 # contiguous runs of data. The rule: the sort key must start with the time
 # column; put the column you filter by most (almost always `symbol`) next.
 
@@ -119,7 +119,7 @@ for name, data in [("trades", trades), ("quotes", quotes), ("bars_1d", daily)]:
 db.schema("trades")
 
 # %% [markdown]
-# A quick query to confirm the schemas earn their keep — per-symbol quoted
+# A quick query to confirm the schemas earn their keep - per-symbol quoted
 # spread in basis points straight off the quotes table. Plain `utf8` symbol
 # columns group and filter exactly as you'd hope; no special "category" type
 # needed at this layer.
@@ -144,7 +144,7 @@ db.sql(
 # `append` has feed semantics: the batch must match the declared schema, be
 # sorted by the time column, and start at or after the table's current
 # maximum timestamp. Everything else is rejected *before* anything is
-# written — the table head never moves on a failed append. In a database
+# written - the table head never moves on a failed append. In a database
 # shared by a team (or written by an agent), this strictness is the point:
 # malformed vendor files and out-of-order backfills fail loudly at ingest
 # instead of silently corrupting downstream research.
@@ -152,7 +152,7 @@ db.sql(
 # Every h5i-db exception carries a machine-readable `.code`, a `.retryable`
 # flag, and often a `.hint` with the recommended fix.
 #
-# **Rejection 1 — schema mismatch.** A vendor "helpfully" ships prices as
+# **Rejection 1 - schema mismatch.** A vendor "helpfully" ships prices as
 # float32 and forgets the `side` column:
 
 # %%
@@ -171,10 +171,10 @@ try:
 except h5i_db.InvalidInputError as e:
     print(f"rejected  code={e.code}")
     print(f"message   {e}")
-    print(f"hint      {e.hint or '(none — the message says it all)'}")
+    print(f"hint      {e.hint or '(none - the message says it all)'}")
 
 # %% [markdown]
-# **Rejection 2 — unsorted data.** Same rows, shuffled — a classic outcome
+# **Rejection 2 - unsorted data.** Same rows, shuffled - a classic outcome
 # of concatenating per-exchange files without a final sort:
 
 # %%
@@ -189,7 +189,7 @@ except h5i_db.InvalidInputError as e:
     print(f"hint      {e.hint}")
 
 # %% [markdown]
-# **Rejection 3 — overlapping time range.** Re-delivering data the table
+# **Rejection 3 - overlapping time range.** Re-delivering data the table
 # already has (the batch's min `ts` is before the stored max) is refused for
 # the same reason: `append` means *extend the feed*, never *interleave into
 # history*. Deliberate restatements go through `write` or the previewable
@@ -214,7 +214,7 @@ except h5i_db.InvalidInputError as e:
 #
 # - **Cheap:** appending *trailing nullable* columns (old segments read as
 #   NULL) and *widening* numerics (int32 → int64, float32 → float64).
-# - **Expensive:** renames, type narrowing, reordering, or dropping columns —
+# - **Expensive:** renames, type narrowing, reordering, or dropping columns -
 #   these mean writing a new table and backfilling.
 #
 # Practical consequence: start wide enough (`int64`, `float64`,
@@ -235,7 +235,7 @@ except h5i_db.InvalidInputError as e:
 # - `sort_key=["ts", "symbol"]` must start with the time column; the
 #   secondary key makes per-symbol scans touch contiguous data.
 # - Strict append rejects schema mismatches, unsorted batches and
-#   overlapping time ranges *before* writing — errors carry `.code` and
+#   overlapping time ranges *before* writing - errors carry `.code` and
 #   `.hint`, and the table head never moves on failure.
 # - Evolve schemas by trailing nullable adds and numeric widening; anything
 #   else is a rebuild, so start wide.

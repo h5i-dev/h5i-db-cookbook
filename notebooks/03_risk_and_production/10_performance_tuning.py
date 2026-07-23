@@ -2,17 +2,17 @@
 # # Performance tuning: pruning, projection, commit granularity, caches
 #
 # h5i-db stores each table as immutable, time-sorted Parquet segments under a
-# versioned manifest. That layout dictates what makes queries fast — and what
+# versioned manifest. That layout dictates what makes queries fast - and what
 # quietly makes them slow:
 #
-# 1. **time-range pruning** — the manifest records each segment's time range,
+# 1. **time-range pruning** - the manifest records each segment's time range,
 #    so time predicates skip whole segments before any I/O;
-# 2. **column projection** — Parquet is columnar; touch fewer columns, read
+# 2. **column projection** - Parquet is columnar; touch fewer columns, read
 #    fewer bytes;
-# 3. **commit granularity** — every commit writes a manifest and at least one
+# 3. **commit granularity** - every commit writes a manifest and at least one
 #    segment; a thousand tiny commits means a thousand tiny files until you
 #    `compact()`;
-# 4. **caches** — the first query after opening a database pays for segment
+# 4. **caches** - the first query after opening a database pays for segment
 #    footer/metadata reads that later queries do not.
 #
 # We measure all four on a ~3M-row tick table, then close with the resource
@@ -33,7 +33,7 @@ db = h5i_db.Database(cu.fresh_db("prod_perf"), create=True)
 
 
 def bench(fn, repeat=3):
-    """Best-of-3 wall time — min filters out scheduler/GC noise."""
+    """Best-of-3 wall time - min filters out scheduler/GC noise."""
     times = []
     for _ in range(repeat):
         t0 = time.perf_counter()
@@ -47,7 +47,7 @@ timings_ms = {}  # collected for the chart at the end
 # %% [markdown]
 # ## 1. The dataset: 10 days of ticks, one commit per day
 #
-# ~3M rows appended day-by-day — the batching pattern h5i-db expects (one
+# ~3M rows appended day-by-day - the batching pattern h5i-db expects (one
 # commit per publication event, not per row and not one monolith). Ten
 # commits leave roughly one segment per day, which is what gives the time
 # predicates below something to prune.
@@ -74,7 +74,7 @@ print(f"{len(trades):,} rows in {len(day_starts)} daily commits ({time.perf_coun
 # engine skip the other nine segments without opening them. Note the two
 # flavors: raw materialization (`SELECT *`) shows pruning at full strength;
 # a `GROUP BY` aggregation is compute-light per row, so its wall-clock gain
-# is smaller — pruning saves I/O, not hash-table work.
+# is smaller - pruning saves I/O, not hash-table work.
 
 # %%
 lo = int(pd.Timestamp("2026-06-05", tz="UTC").value // 1000)
@@ -99,7 +99,7 @@ print(f"aggregate:   {timings_ms['agg (10 days)']:.1f} ms full -> "
 #
 # `SELECT *` on a 6-column tick table drags symbol/exchange/side strings
 # through every operator. Naming the two columns you need reads only their
-# Parquet column chunks — the classic columnar win, and the reason
+# Parquet column chunks - the classic columnar win, and the reason
 # `SELECT *` belongs in exploration, not in scheduled jobs.
 
 # %%
@@ -109,12 +109,12 @@ print(f"SELECT ts, price: {timings_ms['SELECT ts, price']:.0f} ms "
       f"({timings_ms['SELECT * (10 days)'] / timings_ms['SELECT ts, price']:.1f}x)")
 
 # %% [markdown]
-# ## 4. Commit granularity — and `compact()` as the antidote
+# ## 4. Commit granularity - and `compact()` as the antidote
 #
 # Every commit is durable: manifest write, fsync, new segment file. Committing
 # a day of ticks in 300 micro-batches pays that price 300 times on ingest
 # *and* leaves 300 small segments for every later query to open. `compact()`
-# rewrites them into one segment as a new version — history intact, old
+# rewrites them into one segment as a new version - history intact, old
 # versions still readable.
 #
 # One day of ticks (~300k rows), ingested both ways:
@@ -159,7 +159,7 @@ print(f"compact() took {compact_s:.2f}s -> segments_total={c['segments_total']},
 #
 # Reopen the database and run the same aggregation twice. The first run reads
 # segment footers and builds metadata caches; repeats skip that. On a local
-# NVMe the gap is modest — over NFS or object storage it is the difference
+# NVMe the gap is modest - over NFS or object storage it is the difference
 # that makes long-lived readers worth keeping around.
 
 # %%
@@ -217,10 +217,10 @@ except h5i_db.LimitError as e:
     print(f"memory_limit-> LimitError   code={e.code}")
 
 # %% [markdown]
-# ## 8. What the engine costs you — honest numbers
+# ## 8. What the engine costs you - honest numbers
 #
 # Per the design docs, h5i-db's generic scan path carries roughly **20%
-# overhead versus querying the same Parquet files with raw DataFusion** —
+# overhead versus querying the same Parquet files with raw DataFusion** -
 # the price of version resolution, manifest bookkeeping, and the pruning
 # machinery. For that you get time travel, atomic commits and time-series
 # operators; if a one-off bulk scan is truly latency-critical, you can always
@@ -238,16 +238,16 @@ except h5i_db.LimitError as e:
 # ## Takeaways
 #
 # - Time predicates are the cheapest speedup in the system: the manifest
-#   prunes whole segments before I/O — ~8x here on materializing scans
+#   prunes whole segments before I/O - ~8x here on materializing scans
 #   (aggregations gain less; their cost is hash work, not I/O).
 # - Projection matters on wide tick tables: 2 columns ran ~3x faster than
 #   `SELECT *` over 3M rows.
 # - Commit granularity is a real dial: 300 micro-commits made ingest ~60x
 #   slower and queries ~3-4x slower than one batched commit; `compact()`
 #   wins the query time back in under a second.
-# - Cold-open cost is paid once per process — long-lived readers amortize it.
+# - Cold-open cost is paid once per process - long-lived readers amortize it.
 # - Guards (`timeout`, `max_rows`, `memory_limit`) turn resource blowups into
-#   typed, catchable errors — mandatory for shared boxes and agent access.
+#   typed, catchable errors - mandatory for shared boxes and agent access.
 
 # %%
 db.close()

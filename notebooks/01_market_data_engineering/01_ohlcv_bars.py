@@ -4,9 +4,9 @@
 # Bar construction is the first transformation every tick dataset goes
 # through, and it is where subtle bugs are born: wrong bucket boundaries,
 # `last` picked by file order instead of event time, sessions split across
-# UTC midnights. h5i-db makes the whole pipeline one SQL statement —
+# UTC midnights. h5i-db makes the whole pipeline one SQL statement -
 # `time_bucket` + ordered `first_value`/`last_value` + `vwap` stream over
-# time-sorted Parquet segments without a sort step — and the resulting bar
+# time-sorted Parquet segments without a sort step - and the resulting bar
 # table is itself a versioned table you can persist, audit and time-travel.
 #
 # In this recipe we:
@@ -32,7 +32,7 @@ db = h5i_db.Database(cu.fresh_db("mde_ohlcv"), create=True)
 #
 # ~450k synthetic trades: 3 symbols, 5 sessions, U-shaped intraday activity
 # and bid-ask bounce. The table is declared with `time_column="ts"` and a
-# secondary sort on `symbol` — that physical ordering is what lets the bar
+# secondary sort on `symbol` - that physical ordering is what lets the bar
 # queries below stream instead of sort.
 
 # %%
@@ -58,10 +58,10 @@ db.append("trades", trades, note="week of ticks")["rows_total"]
 #
 # One statement per bar width. The idioms that matter:
 #
-# - `time_bucket('<width>', ts)` floors each tick to its bucket — widths like
+# - `time_bucket('<width>', ts)` floors each tick to its bucket - widths like
 #   `'1m'`, `'5m'`, `'1h'` (also `'1d'`, `'1mo'`, ...);
 # - `first_value(price ORDER BY ts)` / `last_value(price ORDER BY ts)` inside
-#   `GROUP BY` give open/close by *event time*, not by accident of row order —
+#   `GROUP BY` give open/close by *event time*, not by accident of row order -
 #   no self-joins;
 # - `vwap(price, size)` is a native aggregate.
 
@@ -97,7 +97,7 @@ for width in ("1m", "5m", "1h"):
 # `time_bucket` takes an optional third argument: an IANA timezone or an
 # origin timestamp. `time_bucket('1d', ts, 'America/New_York')` cuts days at
 # New York midnight (04:00/05:00 UTC depending on DST) instead of UTC
-# midnight — the boundaries below differ by exactly the EDT offset. For a
+# midnight - the boundaries below differ by exactly the EDT offset. For a
 # 13:30–20:00 UTC cash session both cuts happen to *group* ticks the same
 # way, but the NY variant stays correct across DST transitions where a fixed
 # UTC offset would drift by an hour.
@@ -116,7 +116,7 @@ db.sql(
 
 # %% [markdown]
 # Where the bucket choice changes the *numbers*, not just the labels, is any
-# session that crosses UTC midnight — overnight futures, FX, crypto. A
+# session that crosses UTC midnight - overnight futures, FX, crypto. A
 # Globex-style session opens 18:00 New York (22:00 UTC), so a naive UTC day
 # slices every session in two, and so does a New-York-midnight day. The fix
 # is the origin form: `time_bucket('1d', ts, '<session open>')` aligns
@@ -169,12 +169,12 @@ pd.concat(
 
 # %% [markdown]
 # Three sessions of 4,000 trades each: only the session-origin buckets
-# recover them as three clean daily bars — the calendar-day schemes split
+# recover them as three clean daily bars - the calendar-day schemes split
 # every session across two buckets.
 #
 # ## 4. Persist bars as a versioned table
 #
-# Bars are a derived dataset you will rebuild — which is exactly what
+# Bars are a derived dataset you will rebuild - which is exactly what
 # `db.write` is for: it *replaces* the table contents in one atomic commit
 # while keeping every previous build in the version history. Rebuild the
 # bars after a tick correction and the old bars remain queryable via
@@ -266,13 +266,13 @@ print(f"all {len(merged):,} bars match pandas across OHLC, volume, VWAP, count")
 #
 # - Ticks to OHLCV+VWAP bars is one SQL statement: `time_bucket` +
 #   `first_value/last_value(... ORDER BY ts)` + `vwap`, streaming over
-#   time-sorted storage — and it matches a pandas reference exactly.
+#   time-sorted storage - and it matches a pandas reference exactly.
 # - `time_bucket`'s third argument does session alignment: an IANA timezone
 #   for DST-safe calendar days, an origin timestamp for overnight sessions
 #   that straddle midnight. Naive UTC days silently split Globex-style
 #   sessions in two.
 # - Derived bars belong in the database: `db.write` on `bars_5m` gives you
-#   atomic rebuilds with the full build history retained — every downstream
+#   atomic rebuilds with the full build history retained - every downstream
 #   consumer can pin the bar version it was computed from.
 
 # %%

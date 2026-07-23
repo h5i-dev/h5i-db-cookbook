@@ -3,7 +3,7 @@
 #
 # A stock split rewrites history: every price before the effective date must be
 # scaled, or every return computed across it is garbage. That forces an
-# engineering choice — do you *restate* the stored series (and lose the raw
+# engineering choice - do you *restate* the stored series (and lose the raw
 # tape), or keep the raw tape canonical and adjust at read time? With h5i-db
 # you don't have to lose anything either way: a restatement is a `write()`
 # commit with a note, the pre-restatement series stays readable forever via
@@ -25,11 +25,11 @@ db = h5i_db.Database(cu.fresh_db("mde_corpactions"), create=True)
 # ## 1. Reconstruct the raw tape
 #
 # We pull real daily data (cached to parquet, so this is deterministic and
-# offline). One wrinkle: Yahoo's `close` column is already split-adjusted —
+# offline). One wrinkle: Yahoo's `close` column is already split-adjusted -
 # `adj_close` only adds dividend adjustments on top (the AAPL close/adj_close
 # ratio of ~1.07 in 2018 is pure dividends). A real exchange feed would have
 # printed AAPL at ~$499 on 2020-08-28, not ~$125. So we *un-adjust* using the
-# known split schedule to recover the as-printed tape — exactly what a raw
+# known split schedule to recover the as-printed tape - exactly what a raw
 # vendor feed delivers, and the honest starting point for this recipe.
 
 # %%
@@ -62,7 +62,7 @@ px[(px["symbol"] == "AAPL") & px["ts"].between("2020-08-27", "2020-09-02")]
 # %% [markdown]
 # ## 2. Store the raw tape as the canonical table
 #
-# The raw series is what the exchange actually printed — it should be the
+# The raw series is what the exchange actually printed - it should be the
 # immutable source of truth. Everything downstream (adjusted series, returns,
 # factors) is derived and reproducible from it.
 
@@ -87,7 +87,7 @@ db.append("prices", raw_table, note="raw unadjusted tape, AAPL+NVDA 2018-2026")
 # ## 3. The classic screwup: naive returns across a split
 #
 # Compute daily returns straight off the raw closes with a `lag()` window and
-# look at the worst days on record. Three of them are not crashes — they are
+# look at the worst days on record. Three of them are not crashes - they are
 # splits masquerading as -75% and -90% "returns". Any risk model, momentum
 # signal or stop-loss fed this series would have fired on a non-event.
 
@@ -133,11 +133,11 @@ axes[1].legend()
 fig.tight_layout()
 
 # %% [markdown]
-# ## 4. Pattern A — adjustment factors joined at read time
+# ## 4. Pattern A - adjustment factors joined at read time
 #
 # Keep `prices` raw forever; store the split schedule as its own tiny h5i-db
 # table and derive the adjusted series in SQL. A row's adjustment factor is the
-# product of all split ratios with a *later* effective date — `exp(sum(ln ...))`
+# product of all split ratios with a *later* effective date - `exp(sum(ln ...))`
 # turns the product into an aggregate, so one join + group-by does it. When the
 # next split is announced, ingestion is a one-row append; no historical data is
 # touched.
@@ -180,7 +180,7 @@ assert max_err < 0.01
 
 # %% [markdown]
 # The `splits` table is a feed like any other: appends must arrive in time
-# order. A backfilled 2019 split cannot be appended after the 2024 row — h5i-db
+# order. A backfilled 2019 split cannot be appended after the 2024 row - h5i-db
 # rejects it rather than silently corrupting the sort order. (Historical
 # corrections go through `write()` or the plan/apply flow instead.)
 
@@ -198,7 +198,7 @@ except h5i_db.H5iError as e:
     print(f"rejected: code={e.code}\nhint: {e.hint}")
 
 # %% [markdown]
-# ## 5. Pattern B — restate in place, keep history via versioning
+# ## 5. Pattern B - restate in place, keep history via versioning
 #
 # Many desks prefer the adjusted series to *be* the table, so every consumer
 # gets clean prices with zero join logic. The usual cost is that the raw tape
@@ -219,7 +219,7 @@ db.write(
 
 # %% [markdown]
 # The version history *is* the audit trail. `h5i('prices', 1)` queries the
-# pre-restatement tape alongside the live table — here, AAPL around its split,
+# pre-restatement tape alongside the live table - here, AAPL around its split,
 # with the implied factor recovered from the two versions:
 
 # %%
@@ -239,7 +239,7 @@ db.sql(
 
 # %% [markdown]
 # "What did the price series look like before the restatement?" also works by
-# wall-clock commit time — useful when a downstream job only logged *when* it
+# wall-clock commit time - useful when a downstream job only logged *when* it
 # read, not which version:
 
 # %%
@@ -251,7 +251,7 @@ print(f"as of {as_of}:")
 print(aapl_pre[["ts", "symbol", "close"]].to_string(index=False))
 
 # %% [markdown]
-# And with the head restated, the split artifacts are gone — the worst days in
+# And with the head restated, the split artifacts are gone - the worst days in
 # the series are now genuine market moves (COVID-era selloffs, earnings), not
 # corporate-action ghosts:
 
@@ -282,13 +282,13 @@ db.sql(
 #   inspectable via `h5i('prices', v)`. Cost: between action announcement and
 #   restatement the head is stale, and each restatement rewrites the table.
 # - They compose: keep `prices` raw + a `splits` table as ground truth, and
-#   publish a restated `prices_adj` table for convenience — versioning gives
+#   publish a restated `prices_adj` table for convenience - versioning gives
 #   you the audit trail on both.
 
 # %% [markdown]
 # ## Takeaways
 #
-# - Vendor "close" columns are often already adjusted — know what your feed
+# - Vendor "close" columns are often already adjusted - know what your feed
 #   delivers before you build on it. Here we reconstructed the true raw tape
 #   from the split schedule.
 # - Naive returns across a split print -75% (AAPL 4:1) and -90% (NVDA 10:1)
@@ -297,7 +297,7 @@ db.sql(
 #   (`exp(sum(ln(ratio)))`) off an append-only `splits` table.
 # - `write()` + `note` turns restatement into an audited commit;
 #   `h5i('prices', 1)` and `read(as_of=...)` keep every pre-restatement view
-#   queryable — you never have to choose between clean data and the raw tape.
+#   queryable - you never have to choose between clean data and the raw tape.
 
 # %%
 db.close()

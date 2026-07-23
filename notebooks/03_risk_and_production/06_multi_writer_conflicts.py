@@ -1,8 +1,8 @@
 # %% [markdown]
 # # Multi-writer coordination: optimistic locking, conflicts, and retries
 #
-# An h5i-db database is a directory, and nothing stops two processes — a feed
-# handler and a corrections job, or two teammates' notebooks — from opening it
+# An h5i-db database is a directory, and nothing stops two processes - a feed
+# handler and a corrections job, or two teammates' notebooks - from opening it
 # at the same time. h5i-db's answer to concurrent writers is *optimistic
 # concurrency*: every commit can carry an `expected_version`, and if the table
 # head has moved since you read it, the commit is rejected with an explicit
@@ -37,7 +37,7 @@ schema = pa.schema(
 )
 writer_a.create_table("trades", schema, time_column="ts", sort_key=["ts", "symbol"])
 
-# One day of ticks — our "feed". Sections below carve it into
+# One day of ticks - our "feed". Sections below carve it into
 # time-contiguous chunks (the table is sorted by ts, so slices are windows).
 feed = cu.make_trades(symbols=["AAPL", "MSFT", "NVDA"], days=1, trades_per_day=8_000, seed=7)
 print(f"feed: {len(feed):,} rows")
@@ -45,7 +45,7 @@ print(f"feed: {len(feed):,} rows")
 # %% [markdown]
 # ## 1. Two handles, one database
 #
-# `writer_b` opens the *same* directory — think of it as a second process.
+# `writer_b` opens the *same* directory - think of it as a second process.
 # Commits made through one handle are immediately visible through the other:
 # both handles read the same manifest on disk, there is no per-handle cache of
 # the table head to go stale.
@@ -61,7 +61,7 @@ print(f"head seen by A: v{head_a}, by B: v{head_b}")
 # %% [markdown]
 # ## 2. A stale `expected_version` fails loudly
 #
-# B reads the head (v1), plans to append — but before it does, A commits
+# B reads the head (v1), plans to append - but before it does, A commits
 # another chunk. B's `append(..., expected_version=1)` is now a compare-and-
 # swap against a head that no longer exists, and h5i-db rejects it. Note the
 # error is machine-readable: `.code` for dispatch, `.retryable` telling you
@@ -80,7 +80,7 @@ except h5i_db.ConflictError as e:
     print(f"hint      = {e.hint}")
 
 # %% [markdown]
-# Nothing was written — B's rows are not in the table, and the version chain
+# Nothing was written - B's rows are not in the table, and the version chain
 # is untouched. Contrast this with "last writer wins" storage (plain Parquet
 # directories, CSV drops), where B's write would have clobbered or interleaved
 # with A's and nobody would know until reconciliation.
@@ -104,7 +104,7 @@ def append_with_retry(handle, table, data, note=None, max_attempts=5):
             commit = handle.append(table, data, expected_version=head, note=note)
             return commit, attempt
         except h5i_db.ConflictError:
-            continue  # head moved between read and commit — re-read and retry
+            continue  # head moved between read and commit - re-read and retry
     raise RuntimeError(f"gave up after {max_attempts} attempts")
 
 
@@ -115,12 +115,12 @@ print(f"B committed v{commit['sequence']} on attempt {attempts}; rows_total={com
 # ## 4. Three threads racing on one feed
 #
 # Now the stress test: the rest of the feed is split into 9 time-contiguous
-# chunks, and three writer threads — each with its **own** `Database` handle —
+# chunks, and three writer threads - each with its **own** `Database` handle -
 # race to ingest them. Coordination is done *entirely* through the CAS: each
 # thread derives "which chunk is next" from the committed head sequence and
 # appends it with `expected_version=head`. When two threads pick the same
 # chunk, exactly one commit lands; the loser gets `ConflictError`, re-reads
-# the head, and moves on to the next chunk. No locks, no queue — the version
+# the head, and moves on to the next chunk. No locks, no queue - the version
 # chain is the queue.
 
 # %%
@@ -151,7 +151,7 @@ def feed_worker(name: str) -> None:
                               note=f"{name}: chunk {next_chunk}")
                 wins += 1
             except h5i_db.ConflictError:
-                conflicts += 1  # another writer landed this chunk first — retry
+                conflicts += 1  # another writer landed this chunk first - retry
     finally:
         handle.close()
     stats[name] = {"commits": wins, "conflicts": conflicts}
@@ -166,7 +166,7 @@ for t in threads:
 stats
 
 # %% [markdown]
-# Which thread lands which chunk varies run to run — but the *outcome* is
+# Which thread lands which chunk varies run to run - but the *outcome* is
 # deterministic: every chunk committed exactly once, in order, and the version
 # chain is linear. Verify no rows were lost or duplicated:
 
@@ -196,7 +196,7 @@ print(f"version chain: v0..v{seqs[-1]}, strictly linear")
 # The previewable-mutation flow (`plan_delete_range` → inspect → `apply`) is
 # CAS-guarded too: a plan is built against a specific base version, and
 # `apply()` refuses if the head has moved since. Here A plans to delete a
-# window of suspect prints, but B commits fresh data before A applies —
+# window of suspect prints, but B commits fresh data before A applies -
 # exactly the race you want caught when a feed and an ops job share a table.
 #
 # Range arguments are raw **microseconds** (the `ts` column's unit), and the
@@ -216,11 +216,11 @@ writer_b.append("trades", feed.slice(base_rows + thread_rows, late_rows), note="
 try:
     plan.apply()
 except h5i_db.ConflictError as e:
-    print(f"\napply failed — code={e.code}, retryable={e.retryable}")
+    print(f"\napply failed - code={e.code}, retryable={e.retryable}")
     print(f"hint = {e.hint}")
 
 # %% [markdown]
-# The stale plan is dead — but re-planning is cheap, and the second plan is
+# The stale plan is dead - but re-planning is cheap, and the second plan is
 # built against the *new* head, so its preview reflects B's late chunk too.
 # That is the point of the CAS: you re-decide with current facts, instead of
 # blindly mutating a table that changed under you.
@@ -240,17 +240,17 @@ print(f"re-planned and applied as v{commit['sequence']} ({commit['op']}), "
 # %% [markdown]
 # ## Takeaways
 #
-# - Multiple `Database` handles on one path are first-class — commits through
+# - Multiple `Database` handles on one path are first-class - commits through
 #   one handle are immediately visible to the others, and the version chain
 #   stays linear no matter who writes.
 # - `expected_version` turns `append` into a compare-and-swap. A stale write
-#   raises `ConflictError` with `.code` / `.retryable` / `.hint` — an explicit,
+#   raises `ConflictError` with `.code` / `.retryable` / `.hint` - an explicit,
 #   retryable failure instead of a silent lost update.
 # - The retry loop is five lines: re-read head, re-append, bounded attempts.
 #   Three racing threads coordinated through nothing but the CAS ingested a
 #   chunked feed with zero lost rows.
 # - `plan.apply()` is guarded by the same mechanism: plans bind to a base
-#   version, and a moved head forces a re-plan — your preview can never be
+#   version, and a moved head forces a re-plan - your preview can never be
 #   stale at apply time.
 # - Explicit conflict beats last-writer-wins for shared research/production
 #   tables: the failure mode is a retry, not a reconciliation break.

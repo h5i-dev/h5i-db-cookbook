@@ -3,7 +3,7 @@
 #
 # The classic 12-1 momentum factor, end to end on real prices: signal
 # computation as a SQL window query, monthly rebalance dates from
-# `time_bucket('1mo', ...)`, and — the part most backtest stacks get wrong —
+# `time_bucket('1mo', ...)`, and - the part most backtest stacks get wrong -
 # a versioned, snapshotted signal table so that six months from now you can
 # reproduce *exactly* what this run saw. The strategy itself is deliberately
 # vanilla; the h5i-db-native workflow around it is the point.
@@ -22,7 +22,7 @@ db = h5i_db.Database(cu.fresh_db("alpha_momentum"), create=True)
 # ## 1. Load real prices into a versioned table
 #
 # 30 large caps, daily, 2018–2026 (cached Yahoo Finance data). We store only
-# what the study needs — `ts, symbol, adj_close` — with `sort_key`
+# what the study needs - `ts, symbol, adj_close` - with `sort_key`
 # `["ts", "symbol"]` so per-symbol window scans stream in order. `append` is
 # strict about that sort key: the input must be ordered by `ts`, then
 # `symbol` within each timestamp.
@@ -54,7 +54,7 @@ print(f"version {commit['sequence']}: {commit['rows_total']:,} rows")
 # recent month (short-term reversal). On a trading-day series that is
 # `lag(px, 21) / lag(px, 252) - 1` per symbol. The rebalance grid comes from
 # `time_bucket('1mo', ts)`: the last trading day of each calendar month.
-# Joining the two gives the month-end signal panel — no pandas resampling, no
+# Joining the two gives the month-end signal panel - no pandas resampling, no
 # calendar edge cases.
 
 # %%
@@ -86,7 +86,7 @@ panel.tail(4)
 # ## 3. Portfolio construction and an honest P&L
 #
 # With only 30 names a "decile" is 3 stocks, so we long the top 10 and short
-# the bottom 10, equal weight — closer to terciles, and less noisy. Discipline
+# the bottom 10, equal weight - closer to terciles, and less noisy. Discipline
 # checklist:
 #
 # - **No lookahead**: the signal observed at month-end *t* earns the return
@@ -159,16 +159,16 @@ fig.tight_layout()
 # The momentum book lands near a **zero Sharpe** here. That is not a bug: 30
 # mega caps are a terrible momentum universe (the premium historically lives
 # in broader, smaller cross-sections), and 2020–2023 contained brutal momentum
-# crashes. Resist the urge to tweak lookbacks until the curve looks good —
+# crashes. Resist the urge to tweak lookbacks until the curve looks good -
 # that is how backtests die. Report it as it is.
 
 # %% [markdown]
-# ## 5. Version the signal — the reproducibility layer
+# ## 5. Version the signal - the reproducibility layer
 #
 # The panel that produced these numbers goes back into h5i-db as a `signals`
 # table, and a **named snapshot** pins both `prices` and `signals` at this
-# exact state. Anyone can later query `h5i('signals', 'mom-run-001')` — or
-# re-read the prices the run saw — even after both tables move on. That is the
+# exact state. Anyone can later query `h5i('signals', 'mom-run-001')` - or
+# re-read the prices the run saw - even after both tables move on. That is the
 # audit trail a research platform actually needs.
 
 # %%
@@ -226,8 +226,8 @@ db.sql(
 #   into one SQL statement that streams on sorted storage.
 # - Backtest hygiene is cheap: lag the signal one period, charge turnover,
 #   drop the unknowable last month. Do it every time.
-# - The result — near-zero Sharpe for large-cap momentum, ~70% monthly
-#   turnover eating 10 bps a side — is the honest one. A universe of 30 mega
+# - The result - near-zero Sharpe for large-cap momentum, ~70% monthly
+#   turnover eating 10 bps a side - is the honest one. A universe of 30 mega
 #   caps is a demo, not an alpha source.
 # - `db.snapshot("mom-run-001", ...)` pins prices *and* signals in one named,
 #   queryable state: `h5i('signals', 'mom-run-001')` reproduces this run

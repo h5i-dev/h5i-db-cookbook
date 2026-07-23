@@ -3,7 +3,7 @@
 #
 # A risk number nobody can reproduce is a liability. This recipe computes
 # historical and parametric VaR / Expected Shortfall for a fixed equity book
-# on real daily data, backtests the VaR with Kupiec's POF test — and then does
+# on real daily data, backtests the VaR with Kupiec's POF test - and then does
 # the part most notebooks skip: it writes the daily risk metrics into a
 # versioned h5i-db table, one commit per production day, so that "what VaR did
 # we report on date X, and from what inputs?" is a query, not an email thread.
@@ -27,12 +27,12 @@ db = h5i_db.Database(cu.fresh_db("prod_var"), create=True)
 # ## 1. Load real prices into a versioned table
 #
 # Eight-plus years of daily data for 30 liquid US names (cached Yahoo data).
-# We store `adj_close` — total-return-ish series, which is what P&L risk
+# We store `adj_close` - total-return-ish series, which is what P&L risk
 # should be computed on. One bulk `append` = one atomic commit.
 #
 # One strictness worth knowing: with `sort_key=["ts", "symbol"]`, `append`
 # requires the input sorted by the *full* key. Daily panels have 30 symbols
-# sharing each timestamp, so a ts-only sort is not enough — sort by
+# sharing each timestamp, so a ts-only sort is not enough - sort by
 # (ts, symbol) before appending.
 
 # %%
@@ -60,7 +60,7 @@ db.sql("SELECT count(*) AS rows, count(DISTINCT symbol) AS names FROM prices").t
 # The book is a fixed 12-name portfolio (weights sum to 1, $10M notional).
 # Daily simple returns come from a `lag()` window per symbol; the portfolio
 # return is a weighted sum via a join against an inline `VALUES` weights
-# relation. Everything streams on time-sorted storage — no pandas reshaping
+# relation. Everything streams on time-sorted storage - no pandas reshaping
 # until we actually need rolling quantiles.
 
 # %%
@@ -99,7 +99,7 @@ print(f"{len(port):,} trading days, "
 # %% [markdown]
 # ## 3. Rolling historical VaR / ES, plus parametric flavors
 #
-# All measures use a trailing 252-day window **shifted by one day** — the VaR
+# All measures use a trailing 252-day window **shifted by one day** - the VaR
 # reported for day *t* only uses information through *t−1*. That shift is the
 # difference between a risk model and a hindsight model, and it is exactly the
 # kind of detail an auditor will ask about.
@@ -108,7 +108,7 @@ print(f"{len(port):,} trading days, "
 #   beyond the quantile.
 # - **Parametric normal**: rolling mean/vol + normal quantile.
 # - **Parametric Student-t**: same, with a t quantile (df fitted once on the
-#   full standardized sample) rescaled to unit variance — a cheap fat-tail fix.
+#   full standardized sample) rescaled to unit variance - a cheap fat-tail fix.
 
 # %%
 from scipy import stats
@@ -175,11 +175,11 @@ backtest
 # %% [markdown]
 # Reading the table honestly: the historical and normal models hold coverage
 # at 95%, but the 99% historical VaR under-covers (breaches cluster in
-# vol-regime shifts, which a trailing empirical quantile is slow to catch —
+# vol-regime shifts, which a trailing empirical quantile is slow to catch -
 # Kupiec tests coverage only, not independence; Christoffersen's test would
 # flag the clustering). And note the trap in the "fat-tail fix": a Student-t
 # rescaled to unit variance has *less* extreme quantiles than the normal at
-# the 5% level — the fat tails only cross over around 1%. A t-model naively
+# the 5% level - the fat tails only cross over around 1%. A t-model naively
 # swapped in at 95% is anti-conservative, and the test catches it.
 
 # %% [markdown]
@@ -188,7 +188,7 @@ backtest
 # Production pattern: **backfill history in one commit, then one commit per
 # EOD run**. Each daily append is atomic and carries a note; `versions()`
 # then answers "which risk numbers were published on which day, and when
-# exactly" — with wall-clock commit timestamps, without any extra logging
+# exactly" - with wall-clock commit timestamps, without any extra logging
 # infrastructure. We simulate the last 60 production days as individual
 # commits.
 
@@ -228,7 +228,7 @@ for day, row in metrics.iloc[-60:].iterrows():
 
 # %% [markdown]
 # Sixty tiny commits also means sixty tiny Parquet segments. `compact()`
-# merges them into efficient segments — as its own audited commit, so even
+# merges them into efficient segments - as its own audited commit, so even
 # maintenance shows up in the history.
 
 # %%
@@ -238,7 +238,7 @@ print(f"segments: {before['segments']} -> {compacted['segments_total']}, "
       f"op={compacted['op']}, sequence={compacted['sequence']}")
 
 # %% [markdown]
-# The risk table is now queryable like any other — here, every breach day of
+# The risk table is now queryable like any other - here, every breach day of
 # the last two years straight from SQL:
 
 # %%
@@ -279,8 +279,8 @@ fig.tight_layout()
 # %% [markdown]
 # ## Takeaways
 #
-# - The whole return pipeline — per-symbol `lag()` returns, weighted
-#   portfolio aggregation — is one SQL statement on time-sorted storage;
+# - The whole return pipeline - per-symbol `lag()` returns, weighted
+#   portfolio aggregation - is one SQL statement on time-sorted storage;
 #   pandas only enters for rolling quantiles.
 # - Shift your VaR window by one day. Kupiec's POF test then tells you
 #   honestly whether coverage holds; the normal model's fat-tail failure at
@@ -288,7 +288,7 @@ fig.tight_layout()
 # - `risk_metrics` is an *audit trail for free*: one append per EOD run with
 #   a note, `versions()` gives the exact publication time of every risk
 #   number ever reported. No extra logging system.
-# - Many small daily commits are fine — run `compact()` periodically; it is
+# - Many small daily commits are fine - run `compact()` periodically; it is
 #   itself a versioned, noted commit.
 
 # %%

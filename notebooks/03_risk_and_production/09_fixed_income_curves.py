@@ -3,14 +3,14 @@
 #
 # A rates desk's core dataset is small but unforgiving: one par curve per
 # mark date, and every number on it feeds risk, P&L and client marks. The
-# natural h5i-db layout is *long format* — `(ts, tenor_years, yield_pct)` —
+# natural h5i-db layout is *long format* - `(ts, tenor_years, yield_pct)` -
 # with one commit per mark date. That buys three things at once: SQL pivots
 # for any curve analytics, a version per EOD mark set (the audit trail
 # regulators actually ask about), and previewable restatements when a bad
 # contributor slips through.
 #
-# We store 250 business days of curves — including one fat-fingered 10y mark
-# we plant deliberately — run slope/curvature analytics, *find* the bad mark
+# We store 250 business days of curves - including one fat-fingered 10y mark
+# we plant deliberately - run slope/curvature analytics, *find* the bad mark
 # in SQL, restate it with `plan_replace_range`, and prove the pre-restatement
 # view is still queryable forever.
 
@@ -25,7 +25,7 @@ import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("prod_curves"), create=True)
 
-curves = cu.make_yield_curves(days=250)  # ts, tenor_years, yield_pct — Nelson-Siegel dynamics
+curves = cu.make_yield_curves(days=250)  # ts, tenor_years, yield_pct - Nelson-Siegel dynamics
 clean_df = curves.to_pandas()
 mark_dates = clean_df["ts"].unique()
 
@@ -41,7 +41,7 @@ print(f"vendor feed: {len(feed_df):,} rows, bad 10y mark on {bad_date.date()}")
 # ## 1. One mark date = one commit
 #
 # Each day's ten tenors are appended together: the commit *is* the mark set.
-# `versions()` then reads as the desk's marking diary — sequence, rows, and a
+# `versions()` then reads as the desk's marking diary - sequence, rows, and a
 # note naming the mark date. (250 commits in a loop is fine; it is still one
 # commit per publication event, the batching h5i-db expects.)
 
@@ -69,7 +69,7 @@ for day_ts, day_rows in feed_df.groupby("ts"):
 #
 # Long format pivots cleanly with conditional aggregation: one row per mark
 # date, one column per benchmark tenor. From there, the desk's standing time
-# series are arithmetic — 2s10s slope, 2s5s10s butterfly (curvature), and a
+# series are arithmetic - 2s10s slope, 2s5s10s butterfly (curvature), and a
 # naive term-structure premium proxy (10y − 3m; a real term premium needs an
 # expectations model, this is just the long-slope observable).
 
@@ -99,7 +99,7 @@ ax.plot(key_rates["ts"], 100 * key_rates["fly_2_5_10"], lw=1.0, label="2s5s10s f
 ax.axvline(bad_date, color="0.6", ls=":", lw=1)
 ax.annotate("suspicious print", xy=(bad_date, 100 * key_rates.loc[key_rates["ts"] == bad_date, "s2s10"].iloc[0]),
             xytext=(10, 15), textcoords="offset points", fontsize=8)
-ax.set_title("Curve shape time series — note the one-day 2s10s spike")
+ax.set_title("Curve shape time series - note the one-day 2s10s spike")
 ax.set_xlabel("mark date")
 ax.set_ylabel("bp")
 ax.legend(fontsize=8)
@@ -130,16 +130,16 @@ db.sql(
 
 # %% [markdown]
 # The top two rows are the same tenor on consecutive dates with opposite
-# signs — the signature of a bad print, not a market move.
+# signs - the signature of a bad print, not a market move.
 #
-# ## 4. Restate it — with a preview, a note, and full history
+# ## 4. Restate it - with a preview, a note, and full history
 #
 # `plan_replace_range` stages the correction against the bad mark date
 # (range bounds are raw microseconds in `ts` units; the end bound is
 # exclusive, so `[day_us, day_us + 1)` captures exactly that day's ten rows
 # since all ten share the same timestamp). We inspect the summary and
 # samples *before* anything changes, then apply with a note. The desk never
-# edits history — it appends a corrected version on top.
+# edits history - it appends a corrected version on top.
 
 # %%
 day_us = int(bad_date.value // 1000)
@@ -168,7 +168,7 @@ print(f"applied as v{commit['sequence']} ({commit['op']})")
 # ## 5. Point-in-time: what did risk run on that night?
 #
 # The question that matters after any restatement: *which number did
-# downstream consumers actually see?* Every version is still addressable —
+# downstream consumers actually see?* Every version is still addressable -
 # `h5i('curves', v)` in SQL joins the as-marked view against the restated
 # head in one query. Overnight risk on the bad date ran on 4.05%; today's
 # books show 3.80% for the same mark date.
@@ -193,10 +193,10 @@ db.sql(
 #
 # Standard unchanged-curve arithmetic for a 5y position over a 1y horizon,
 # interpolating the stored tenors: **rolldown** is the yield pickup from
-# aging 5y → 4y on today's curve; **carry** is the yield over 3m funding —
+# aging 5y → 4y on today's curve; **carry** is the yield over 3m funding -
 # negative here, since this simulated curve ends the year inverted at the
 # front. Both are yield-space approximations (multiply by duration for price
-# space) — fine for a relative-value screen, not a P&L forecast.
+# space) - fine for a relative-value screen, not a P&L forecast.
 
 # %%
 latest = db.sql(
@@ -237,7 +237,7 @@ fig.tight_layout()
 # - Long format `(ts, tenor_years, yield_pct)` + one commit per mark date
 #   turns the curve history into a versioned, SQL-queryable marking diary.
 # - Conditional-aggregation pivots and `lag()` windows cover the standing
-#   analytics — slope, fly, day-over-day outlier detection — without ever
+#   analytics - slope, fly, day-over-day outlier detection - without ever
 #   reshaping data outside the database.
 # - Restatements are `plan_replace_range`: microsecond range bounds
 #   (end-exclusive) select the mark date, the preview shows exactly what
@@ -245,7 +245,7 @@ fig.tight_layout()
 # - Point-in-time is free: `h5i('curves', v)` joined against the head answers
 #   "what did risk run on that night?" with provenance, not archaeology.
 # - Carry/rolldown and similar curve math read naturally off the stored
-#   tenors — the database serves marks, pandas does the interpolation.
+#   tenors - the database serves marks, pandas does the interpolation.
 
 # %%
 db.close()

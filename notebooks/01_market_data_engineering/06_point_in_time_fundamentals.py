@@ -4,7 +4,7 @@
 # Fundamentals have two timestamps: the fiscal date the numbers describe
 # (`period_end`) and the date the market actually learned them (the report
 # date, typically 25-55 days later). Index your database by the wrong one and
-# every backtest silently trades on numbers that did not exist yet — the most
+# every backtest silently trades on numbers that did not exist yet - the most
 # common and most flattering bug in equity research. This recipe stores
 # fundamentals keyed by *report time*, uses h5i-db's `asof_join` to attach
 # "latest reported EPS" to a daily price panel, quantifies exactly how much a
@@ -24,13 +24,13 @@ db = h5i_db.Database(cu.fresh_db("mde_pit"), create=True)
 # %% [markdown]
 # ## 1. Data: a price panel that reacts at the *announcement*
 #
-# `make_fundamentals` generates quarterly EPS with realistic reporting lags —
+# `make_fundamentals` generates quarterly EPS with realistic reporting lags -
 # `ts` is the report timestamp, `period_end` the fiscal date. Its prices are
 # generated independently of `make_daily_prices`, so out of the box no EPS
 # signal predicts anything. To make lookahead bias *measurable* we graft in
 # the one mechanism that matters: on the first session after each report, the
 # stock jumps 4% in the direction of the EPS surprise (permanently). That is
-# the textbook announcement reaction — and the honest way to demo the bias:
+# the textbook announcement reaction - and the honest way to demo the bias:
 # information is priced in *when it is released*, not when the quarter ended.
 
 # %%
@@ -56,7 +56,7 @@ print(f"{len(daily)} daily rows, {daily['ts'].min():%Y-%m-%d} .. {daily['ts'].ma
 
 # %% [markdown]
 # The gap between the two timestamps is the whole problem. For one symbol,
-# each quarter's numbers are "in limbo" for the length of the grey bar — a
+# each quarter's numbers are "in limbo" for the length of the grey bar - a
 # `period_end`-keyed join hands your backtest the numbers at the *left* end
 # of the bar; the market only saw them at the *right* end.
 
@@ -83,7 +83,7 @@ fig.tight_layout()
 # %% [markdown]
 # ## 2. Store both tables, keyed by the right clock
 #
-# The fundamentals table's `time_column` is the **report** timestamp — the
+# The fundamentals table's `time_column` is the **report** timestamp - the
 # moment each row became public knowledge. `period_end` rides along as an
 # ordinary column. This single schema decision is what makes every downstream
 # ASOF query point-in-time by default.
@@ -127,12 +127,12 @@ db.append(
 
 # %% [markdown]
 # Our study rebalances monthly, so the research panel is the month-end cross
-# section — one `time_bucket('1mo', ...)` rollup, materialized as its own
+# section - one `time_bucket('1mo', ...)` rollup, materialized as its own
 # table. Deriving compact, purpose-built tables from the canonical daily
 # store is the usual shape of this workflow: the join runs on ~990
 # month-ends x ~300 reports instead of the full daily panel. Whatever the
 # sizes, assert one output row per left row after any ASOF join, as we do
-# below — it turns silent join mistakes into loud ones.
+# below - it turns silent join mistakes into loud ones.
 
 # %%
 monthly = db.sql(
@@ -163,7 +163,7 @@ print(f"{N_MONTHLY} month-end observations")
 #
 # `asof_join('prices_m', 'fundamentals', 'ts', 'ts', 'symbol')` attaches, to
 # each month-end bar, the latest fundamentals row whose *report time* is at or
-# before that bar — per symbol, streaming on sorted storage, no window
+# before that bar - per symbol, streaming on sorted storage, no window
 # gymnastics. Colliding right-side columns get a `_right` suffix, so the
 # report timestamp survives as `ts_right`: every row carries its own
 # "known since" provenance.
@@ -196,7 +196,7 @@ pit[pit["symbol"] == "STK000"].iloc[3:9]
 # %% [markdown]
 # A `tolerance` (raw microseconds) caps staleness: with a 120-day limit,
 # month-ends whose latest report is older than ~a quarter and a half get NULLs
-# instead of a zombie EPS — useful for flagging delisted names or late filers.
+# instead of a zombie EPS - useful for flagging delisted names or late filers.
 
 # %%
 TOL_US = 120 * 86_400 * 1_000_000
@@ -211,7 +211,7 @@ db.sql(
 # %% [markdown]
 # ## 4. The wrong join, and what it costs
 #
-# The classic mistake is joining on `period_end` — as if numbers were known
+# The classic mistake is joining on `period_end` - as if numbers were known
 # the night the quarter closed. `asof_join` takes any right-side time column,
 # so the buggy version is one argument away (our reporting lags keep
 # `period_end` monotone in report order, which the join requires). First, the
@@ -234,8 +234,8 @@ print(f"{leak:.1%} of month-end observations see a *different* EPS under the per
 print(f"on those, the join is early by up to the reporting lag (mean {lags.mean():.0f} days)")
 
 # %% [markdown]
-# Now the damage in signal terms. Take the simplest earnings signal — the sign
-# of QoQ EPS growth — and relate it to the *forward* 21-session return,
+# Now the damage in signal terms. Take the simplest earnings signal - the sign
+# of QoQ EPS growth - and relate it to the *forward* 21-session return,
 # measured relative to the cross-sectional mean (market-relative, so the
 # common factor and its handful of effective observations don't drown the
 # comparison). The point-in-time signal knows nothing: the announcement pop
@@ -273,7 +273,7 @@ ax.bar(x - 0.18, bias["fwd_ret_eps_up_pct"], 0.36, label="EPS growth > 0", color
 ax.bar(x + 0.18, bias["fwd_ret_eps_down_pct"], 0.36, label="EPS growth < 0", color="tab:red")
 ax.set_xticks(x, bias.index)
 ax.axhline(0, color="black", lw=0.8)
-ax.set_title("Market-relative forward 21-session return — the lookahead mirage")
+ax.set_title("Market-relative forward 21-session return - the lookahead mirage")
 ax.set_xlabel("how fundamentals were joined")
 ax.set_ylabel("mean forward return (%)")
 ax.legend()
@@ -281,14 +281,14 @@ fig.tight_layout()
 
 # %% [markdown]
 # The entire "alpha" of the lookahead variant is the announcement reaction it
-# saw before the market did. Same data, same signal, one wrong timestamp —
+# saw before the market did. Same data, same signal, one wrong timestamp -
 # and a spread appears out of nowhere. On real data this is exactly how
 # too-good-to-be-true fundamental backtests are born.
 #
 # ## 5. Restatements: reproducing the original study
 #
 # Fundamentals get restated. In an append-keyed PIT table a restatement is a
-# *new row at its own report time* — history is never edited, so the old view
+# *new row at its own report time* - history is never edited, so the old view
 # remains queryable. Suppose STK003's latest EPS is revised up 35% after an
 # audit adjustment:
 
@@ -326,7 +326,7 @@ db.sql(
 
 # %% [markdown]
 # Recording `v_study` (or a named snapshot) alongside a research run means the
-# study re-executes against byte-identical inputs forever — the restatement
+# study re-executes against byte-identical inputs forever - the restatement
 # lands for live use without rewriting your paper trail. Note `asof_join`
 # operates on table *heads*; to rebuild a full pinned panel, read the pinned
 # version (`db.read("fundamentals", version=v_study)` or `h5i(...)` in SQL)
@@ -341,7 +341,7 @@ db.sql(
 #   machinery: per-symbol latest-known-value, with `ts_right` as built-in
 #   "known since" provenance and `tolerance` to refuse stale numbers.
 # - Joining on `period_end` handed a do-nothing signal a fat announcement-pop
-#   spread — lookahead bias measured, not just asserted.
+#   spread - lookahead bias measured, not just asserted.
 # - Restatements are appends, not edits; pinning a version (`h5i('t', v)`,
 #   `read(version=)`) reproduces the original study exactly while the head
 #   serves the corrected view.

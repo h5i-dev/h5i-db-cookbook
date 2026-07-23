@@ -3,7 +3,7 @@
 #
 # Raw vendor tick files arrive dirty: fat-finger prints 10x off, zero prices
 # from feed glitches, duplicated blocks from replayed packets, after-hours
-# junk. The dangerous part isn't detection — it's the *fix*: a script that
+# junk. The dangerous part isn't detection - it's the *fix*: a script that
 # UPDATEs ticks in place leaves you unable to say what changed, when, or how
 # to undo it. h5i-db's answer is the plan/apply flow: every mutation is
 # staged as a previewable plan (row counts, before/after samples), applied as
@@ -70,7 +70,7 @@ dirty = (
 print(f"{len(dirty):,} rows including {len(dup_block)} duplicates and {len(after_hours)} after-hours prints")
 
 # %% [markdown]
-# Ingest day by day, one commit per vendor file — the commit boundary *is* the
+# Ingest day by day, one commit per vendor file - the commit boundary *is* the
 # provenance boundary, and the notes say which file each version came from.
 
 # %%
@@ -96,8 +96,8 @@ print("as-delivered head version:", V_RAW)
 # ## 2. Detection, one query per defect class
 #
 # Zero prices are a plain predicate. Fat fingers stand out against a robust
-# local reference — the 5-minute per-symbol median via
-# `approx_percentile_cont` — rather than a mean the outlier itself drags
+# local reference - the 5-minute per-symbol median via
+# `approx_percentile_cont` - rather than a mean the outlier itself drags
 # around:
 
 # %%
@@ -150,12 +150,12 @@ db.sql(
 ).to_pandas()
 
 # %% [markdown]
-# ## 3. Fix 1 — delete the after-hours block, with a preview
+# ## 3. Fix 1 - delete the after-hours block, with a preview
 #
 # `plan_delete_range` stages the mutation without touching the table. The
 # range is a raw `int64` window in the time column's unit (microseconds
 # here). The summary and `before_sample` tell you exactly what would
-# disappear — *review the blast radius before anything changes*.
+# disappear - *review the blast radius before anything changes*.
 
 # %%
 OOH0 = int(pd.Timestamp("2026-06-01 22:00", tz="UTC").value // 1_000)
@@ -171,9 +171,9 @@ plan.before_sample.to_pandas().head(4)
 plan.apply()
 
 # %% [markdown]
-# ## 4. Fix 2 — replace the polluted window with repaired data
+# ## 4. Fix 2 - replace the polluted window with repaired data
 #
-# For the 15:00-15:15 window we don't want to delete — we want the *corrected*
+# For the 15:00-15:15 window we don't want to delete - we want the *corrected*
 # prints: fat fingers scaled back by 10, zero prices dropped, duplicates
 # collapsed. Pull the window, repair it in pandas, and stage a
 # `plan_replace_range` with the repaired rows. The after/before samples make
@@ -232,7 +232,7 @@ db.sql(
 # %% [markdown]
 # ## 5. The audit trail: every correction is a version
 #
-# `versions()` reads like a changelog — which vendor file arrived when, what
+# `versions()` reads like a changelog - which vendor file arrived when, what
 # was deleted, what was replaced, each with a note. And because the
 # as-delivered version is still addressable, "what exactly did we change?" is
 # a SQL join between two versions of the same table, not an archaeology
@@ -287,7 +287,7 @@ fig.tight_layout()
 #
 # Suppose an eager second pass deletes a window that turns out to be
 # legitimate volatility. Because the deletion is just another version,
-# rolling back is `restore()` — which moves the head *forward* to a new
+# rolling back is `restore()` - which moves the head *forward* to a new
 # version with the old content. Nothing is ever lost, including the mistake
 # itself.
 
@@ -305,8 +305,8 @@ print("rows after restore:   ", db.sql("SELECT count(*) n FROM trades").to_panda
 # %% [markdown]
 # ## 7. Lock the table down: plans only
 #
-# On a shared research database you want *nobody* — junior, cron job, or
-# LLM agent — running unreviewed destructive writes. `set_policy` gates the
+# On a shared research database you want *nobody* - junior, cron job, or
+# LLM agent - running unreviewed destructive writes. `set_policy` gates the
 # direct mutation paths; the plan/apply flow (which forces a previewable,
 # noted, atomic commit) keeps working. A gated call raises `PolicyError`
 # with a machine-readable code and a remediation hint:
@@ -338,7 +338,7 @@ print("after discard:", db.list_plans("trades"))
 #   hours, `approx_percentile_cont` medians for fat fingers, GROUP BY/HAVING
 #   for replayed packets.
 # - `plan_delete_range` / `plan_replace_range` make corrections *reviewable
-#   before they happen* — summary, before/after samples — then land them as
+#   before they happen* - summary, before/after samples - then land them as
 #   atomic, noted commits. Ranges are raw microseconds of the time column.
 # - The version chain is the audit trail: as-delivered data stays queryable
 #   (`h5i('trades', v)`), diffs are SQL joins, and `restore()` undoes

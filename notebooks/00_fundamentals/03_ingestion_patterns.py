@@ -4,8 +4,8 @@
 # Real desks never get data from one place: the tick feed hands you Arrow
 # batches, research notebooks live in pandas or polars, vendors drop Parquet,
 # and the odd legacy process still emails CSV. h5i-db's ingestion surface is
-# deliberately small — `append` (extend the feed) and `write` (replace the
-# contents) — and both accept anything Arrow-shaped. This recipe ingests five
+# deliberately small - `append` (extend the feed) and `write` (replace the
+# contents) - and both accept anything Arrow-shaped. This recipe ingests five
 # consecutive trading days from five different sources into one `trades`
 # table, then covers the operational half of ingestion: `write` vs `append`
 # semantics, optimistic locking with `expected_version`, and why you batch
@@ -40,7 +40,7 @@ db.create_table("trades", SCHEMA, time_column="ts", sort_key=["ts", "symbol"])
 
 # %% [markdown]
 # One continuous 11-session tape, sliced into per-day batches so each
-# "delivery" arrives in time order — `append` requires every batch to start
+# "delivery" arrives in time order - `append` requires every batch to start
 # at or after the table's stored max timestamp (feed semantics). A staging
 # directory under `data/dbs` stands in for the vendor drop zone.
 
@@ -60,7 +60,7 @@ staging.mkdir(parents=True)
 # %% [markdown]
 # ## 1. From a pyarrow Table
 #
-# The native path — zero conversion. Every `append` returns the **commit
+# The native path - zero conversion. Every `append` returns the **commit
 # dict**: the new version number (`sequence`), total rows and segment
 # counts after the commit. Log it in your loaders; it is the receipt that
 # ties a delivery to a version.
@@ -73,7 +73,7 @@ commit
 # ## 2. From a pandas DataFrame
 #
 # `pa.Table.from_pandas` does the heavy lifting, but always pass
-# `schema=` — depending on your pandas version, datetimes round-trip as
+# `schema=` - depending on your pandas version, datetimes round-trip as
 # nanoseconds (not the table's microseconds) and strict append would refuse
 # the mismatch. Passing the target schema makes the conversion do the cast.
 
@@ -91,7 +91,7 @@ commit = db.append(
 #
 # Polars speaks Arrow natively, with one wrinkle: its `to_arrow()` emits
 # `large_string` columns, which strict append rejects as a schema mismatch.
-# `.cast(SCHEMA)` is a cheap metadata-level fix — make it a habit on any
+# `.cast(SCHEMA)` is a cheap metadata-level fix - make it a habit on any
 # polars → h5i-db boundary.
 
 # %%
@@ -104,7 +104,7 @@ commit = db.append("trades", pldf.to_arrow().cast(SCHEMA), note="day 3: polars")
 #
 # Parquet preserves types exactly, so a vendor Parquet drop is a
 # read-and-append. (If a vendor's row order is suspect, sort before
-# appending — strict append will tell you either way.)
+# appending - strict append will tell you either way.)
 
 # %%
 pq.write_table(by_day[sessions[3]], staging / "vendor_day4.parquet")
@@ -115,7 +115,7 @@ commit = db.append("trades", pq.read_table(staging / "vendor_day4.parquet"), not
 # %% [markdown]
 # ## 5. From CSV
 #
-# CSV keeps values but drops types — read it naively and `ts` comes back as
+# CSV keeps values but drops types - read it naively and `ts` comes back as
 # whatever the parser guesses. `ConvertOptions(column_types=...)` pins the
 # time column to `timestamp[us, tz=UTC]` at parse time, giving you back an
 # exact schema match.
@@ -136,11 +136,11 @@ commit = db.append("trades", from_csv, note="day 5: legacy csv")
 #
 # - **`append`** extends the feed: strictly time-ordered, never touches
 #   existing rows. Use it for anything that behaves like a tape.
-# - **`write`** replaces the table's contents with the given data — but as a
+# - **`write`** replaces the table's contents with the given data - but as a
 #   *new version*, with all history kept. Use it for reference data that is
 #   re-stated wholesale: universe membership, symbol mappings, risk limits.
 #
-# Neither is ever destructive — old versions remain readable via
+# Neither is ever destructive - old versions remain readable via
 # `db.read(..., version=n)` and `h5i('table', n)` in SQL.
 
 # %%
@@ -170,7 +170,7 @@ print("v1   :", db.read("universe", version=1)["symbol"].to_pylist())
 # When two loaders share a table, "append whatever, whenever" silently
 # interleaves deliveries. `append(..., expected_version=n)` is
 # compare-and-swap: the commit only lands if the table head is still at
-# version `n`, otherwise you get a `ConflictError` — note `retryable=True`
+# version `n`, otherwise you get a `ConflictError` - note `retryable=True`
 # and the hint spelling out the recovery. The retry is mechanical: re-read
 # the head, re-append.
 
@@ -192,11 +192,11 @@ print(f"\nretried against v{head} -> committed v{commit['sequence']}")
 # ## Batching and compaction
 #
 # Every commit writes a manifest and at least one segment, so commit
-# *batches* (a day, an hour, a few thousand rows) — never per row. But even
+# *batches* (a day, an hour, a few thousand rows) - never per row. But even
 # day-sized commits accumulate small segments, and query planning touches
 # every one of them. The daily-loop-then-compact pattern below is the normal
 # rhythm: many small append commits during the week, one `compact` to merge
-# segments. Compaction is itself just another commit — same data, fewer
+# segments. Compaction is itself just another commit - same data, fewer
 # segments, full history retained.
 
 # %%
@@ -217,7 +217,7 @@ print(f"compacted: {before['segments']} segments -> {commit['segments_total']}, 
 ]
 
 # %%
-# One tape, five formats, eleven commits — and SQL sees a single clean table.
+# One tape, five formats, eleven commits - and SQL sees a single clean table.
 db.sql(
     """
     SELECT time_bucket('1d', ts) AS session, count(*) AS trades,
@@ -235,10 +235,10 @@ db.sql(
 # - `append` = extend the feed (strictly time-ordered); `write` = restate
 #   the contents as a new version. Neither destroys history.
 # - The commit dict (`sequence`, `rows_total`, `segments_total`) is your
-#   ingestion receipt — log it.
+#   ingestion receipt - log it.
 # - `expected_version` turns append into compare-and-swap; on
 #   `ConflictError` (retryable), re-read the head and re-append.
-# - Batch your commits, then `compact` after many small appends — compaction
+# - Batch your commits, then `compact` after many small appends - compaction
 #   is just another version, merging segments without touching history.
 
 # %%

@@ -9,8 +9,8 @@
 # h5i-db's version chain as the system of record:
 #
 # 1. `prices` table from real daily closes; 12-1 momentum in SQL,
-# 2. a `holdings` table appended once per rebalance — one commit per
-#    rebalance, with a note — plus an audit snapshot,
+# 2. a `holdings` table appended once per rebalance - one commit per
+#    rebalance, with a note - plus an audit snapshot,
 # 3. turnover and trade lists reconstructed *from version diffs* with
 #    `h5i('holdings', v)` in SQL,
 # 4. NAV vs benchmark, weight drift between rebalances, and point-in-time
@@ -29,9 +29,9 @@ db = h5i_db.Database(cu.fresh_db("alpha_rebalance"), create=True)
 # %% [markdown]
 # ## 1. Real prices in, momentum out
 #
-# Split-adjusted closes for 30 liquid names. The 12-1 momentum signal —
+# Split-adjusted closes for 30 liquid names. The 12-1 momentum signal -
 # trailing 12-month return excluding the most recent month, the classic
-# formation rule — is two `lag()` windows in SQL: `lag(adj_close, 21)` over
+# formation rule - is two `lag()` windows in SQL: `lag(adj_close, 21)` over
 # `lag(adj_close, 252)` on the trading-day series, per symbol.
 
 # %%
@@ -71,7 +71,7 @@ print(f"{px.shape[0]} trading days x {px.shape[1]} symbols")
 # Monthly, 2023-01 through 2026-06: rank on momentum, hold the top 10
 # equal-weight, trade at that session's close, pay 10 bps on traded
 # notional. Each rebalance appends that day's book (shares, price, weight
-# per held name) to `holdings` — an atomic commit carrying a
+# per held name) to `holdings` - an atomic commit carrying a
 # `note="rebalance YYYY-MM"`. The book *history* is append-only; the *state*
 # at any version is "the rows at that version's latest timestamp". At the
 # December 2025 rebalance we also cut a named snapshot, the audit anchor a
@@ -135,7 +135,7 @@ for v in versions[-3:]:
 # %% [markdown]
 # ## 3. Trade lists and turnover from version diffs
 #
-# Nothing in the loop wrote a "trades" table — it does not need to exist.
+# Nothing in the loop wrote a "trades" table - it does not need to exist.
 # The trade list *is* the difference between consecutive versions of the
 # book. `h5i('holdings', v)` exposes any version to SQL, so a FULL OUTER
 # JOIN of version `v`'s latest book against version `v-1`'s reconstructs
@@ -148,7 +148,7 @@ def book_ts(v):
     """Timestamp of the latest book inside version v of `holdings`."""
     return db.sql(f"SELECT max(ts) AS m FROM h5i('holdings', {v})").to_pandas()["m"][0]
 
-# Resolve each version's book timestamp once and inline it as a literal —
+# Resolve each version's book timestamp once and inline it as a literal -
 # the resolved read point then appears verbatim in the SQL, which is what
 # you want in an audit artifact (and it saves re-running the subquery in
 # every relation). px_now marks every leg (including exits) at the
@@ -185,7 +185,7 @@ trade_list.round(1)
 
 # %% [markdown]
 # The same diff, aggregated, gives per-rebalance traded notional and
-# two-way turnover — an audit-grade number derived purely from committed
+# two-way turnover - an audit-grade number derived purely from committed
 # versions, which we cross-check against the loop's own ledger.
 
 # %%
@@ -221,7 +221,7 @@ print(f"version-diff turnover matches the loop's ledger; mean two-way turnover "
 # ## 4. NAV, benchmark, and drift between rebalances
 #
 # Daily NAV is just held shares marked on the price panel. The benchmark is
-# the equal-weight 30-name portfolio (daily rebalanced, no costs — a hard
+# the equal-weight 30-name portfolio (daily rebalanced, no costs - a hard
 # bar). Between rebalances the book drifts off its equal-weight targets;
 # the L1 drift `0.5 * sum|w - w_target|` shows the sawtooth that monthly
 # rebalancing tolerates.
@@ -281,20 +281,20 @@ axes[1].legend()
 fig.tight_layout()
 
 # %% [markdown]
-# ## 5. "What was the book?" — three ways to reconstruct it
+# ## 5. "What was the book?" - three ways to reconstruct it
 #
 # The audit story that versioning buys:
 #
-# - **by data time** — `WHERE ts = ...` on the live table (the book struck
+# - **by data time** - `WHERE ts = ...` on the live table (the book struck
 #   at a given rebalance date),
-# - **by named snapshot** — `h5i('holdings', 'eoy-2025')`, pinned when the
+# - **by named snapshot** - `h5i('holdings', 'eoy-2025')`, pinned when the
 #   December 2025 rebalance was committed,
-# - **by commit time** — `read(as_of=...)` replays the table exactly as it
+# - **by commit time** - `read(as_of=...)` replays the table exactly as it
 #   existed when a given commit was the head. In this notebook all commits
 #   happened seconds apart, so `as_of` maps to run time rather than
 #   calendar time; in production, where each rebalance commits at its real
 #   EOD, `as_of="2025-12-31T23:00:00Z"` *is* the calendar question. Either
-#   way it is O(1) — no replay, no restore.
+#   way it is O(1) - no replay, no restore.
 
 # %%
 eoy = db.sql(
@@ -321,13 +321,13 @@ print(f"\nread(version={v_dec}) == read(as_of='{as_of_iso}'): {by_version.num_ro
 #
 # - One rebalance = one commit with a note is the natural grain for a
 #   holdings table: `versions()` becomes the rebalance log, and no separate
-#   trades table is needed — trade lists and turnover fall out of
+#   trades table is needed - trade lists and turnover fall out of
 #   `h5i('holdings', v)` FULL OUTER JOIN `h5i('holdings', v-1)`, and they
 #   reconciled exactly with the simulation's own ledger.
 # - Named snapshots (`'eoy-2025'`) give auditors a stable handle; version
 #   pins and `as_of` reads answer "what did the book look like" in O(1).
 # - The momentum-vs-benchmark result is period-dependent, as momentum
-#   always is (here it wins on return and loses on Sharpe) — the point is
+#   always is (here it wins on return and loses on Sharpe) - the point is
 #   the machinery: costs, turnover (~40% two-way per month for a top-10
 #   momentum book) and drift are all measured from committed state, not
 #   recomputed hopefully.

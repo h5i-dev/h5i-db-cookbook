@@ -1,8 +1,8 @@
 # %% [markdown]
 # # Regular grids for irregular markets: gapfill and resample
 #
-# Illiquid names don't trade every minute, but almost everything downstream —
-# covariance matrices, joins against liquid benchmarks, risk marks — wants a
+# Illiquid names don't trade every minute, but almost everything downstream -
+# covariance matrices, joins against liquid benchmarks, risk marks - wants a
 # regular time grid. h5i-db's `gapfill()` (alias `resample()`) turns a stored
 # bar table into a regular grid in one SQL call, with three fill policies:
 # `'null'` (holes stay visible), `'locf'` (last observation carried forward)
@@ -53,7 +53,7 @@ db.sql("SELECT symbol, count(*) AS n_trades FROM trades GROUP BY 1 ORDER BY 1").
 #
 # 1-minute closes for NVDA. One h5i-db-specific design point: `gapfill()`
 # operates on a **stored table name** and treats the whole table as a single
-# series — there is no partition-by argument. So the pattern is: build the
+# series - there is no partition-by argument. So the pattern is: build the
 # per-instrument bar series, store it as its own table, then gapfill that.
 # (For a multi-symbol universe, write one bar table per series, or gapfill
 # filtered copies.)
@@ -83,8 +83,8 @@ print(f"{n_bars:,} one-minute bars observed out of {session_minutes:,} session m
 # ## 3. `gapfill` onto a regular grid
 #
 # The step is in **raw microseconds** (the unit of the `ts` column):
-# 1 minute = 60_000_000. The grid spans the table's min to max timestamp —
-# overnight included — so filter to session hours downstream when that is
+# 1 minute = 60_000_000. The grid spans the table's min to max timestamp -
+# overnight included - so filter to session hours downstream when that is
 # what your analytics need.
 
 # %%
@@ -96,14 +96,14 @@ locf.head(8)
 
 # %% [markdown]
 # Note the fine print visible above: locf carries **every** column forward,
-# including `volume` — a phantom-volume artifact. For carry-forward marking,
+# including `volume` - a phantom-volume artifact. For carry-forward marking,
 # store price-only series (as here, use `close`), or run `'null'` mode and
 # `COALESCE(volume, 0)` yourself.
 #
 # ## 4. The three fill policies, side by side
 #
 # Same call, three modes, one gappy morning window. `gapfill` composes like
-# any table — the outer `WHERE` just filters its output.
+# any table - the outer `WHERE` just filters its output.
 
 # %%
 window = {}
@@ -133,13 +133,13 @@ fig.tight_layout()
 # %% [markdown]
 # Two of these are safe in different ways, one is dangerous: `'null'` keeps
 # holes honest, `'locf'` is causal (uses only past data) but goes stale,
-# while `'interpolate'` **looks ahead** — each filled point uses the *next*
+# while `'interpolate'` **looks ahead** - each filled point uses the *next*
 # observation, so an interpolated series must never feed a backtest signal.
 #
 # ## 5. `resample` alias, and the row-count guard
 #
 # `resample(...)` is an exact alias of `gapfill(...)`. Both refuse to
-# generate more than 1M rows — a fat-finger step (100ms over three days,
+# generate more than 1M rows - a fat-finger step (100ms over three days,
 # below) raises a `LimitError` instead of silently materializing millions of
 # rows. A dense continuous series shows the honest use: 72h of EURUSD ticks
 # onto a 1-second grid.
@@ -165,7 +165,7 @@ except h5i_db.LimitError as e:
 # ## 6. Phantom returns: why the fill mode is a modelling decision
 #
 # Mark the illiquid book off the locf grid and your minute returns are
-# mostly zero — stale prices masquerading as "no move". Compute the same
+# mostly zero - stale prices masquerading as "no move". Compute the same
 # return series both ways (intraday pairs only, overnight excluded):
 
 # %%
@@ -191,13 +191,13 @@ for name, r in (("locf grid", r_locf), ("null grid", r_null)):
 
 # %% [markdown]
 # Note what locf does and does not distort. Total variance is roughly
-# conserved — a stale run collapses the true move into one delayed jump, so
+# conserved - a stale run collapses the true move into one delayed jump, so
 # headline realized vol barely shifts. The *distribution* is mangled: nearly
 # half the minutes report exactly zero move and excess kurtosis explodes
 # (~5.5 vs ~0.5), i.e. the locf series is "nothing happened" punctuated by
 # fictitious jumps timed at the next print, not at the move. Anything
-# consuming minute returns — short-horizon risk, jump detection,
-# cross-correlations against liquid names (the Epps effect) — inherits that
+# consuming minute returns - short-horizon risk, jump detection,
+# cross-correlations against liquid names (the Epps effect) - inherits that
 # artifact. A sane production pattern: store observed bars, publish the
 # `'null'` grid, and make carry-forward an explicit, documented step at the
 # point of use.
@@ -205,16 +205,16 @@ for name, r in (("locf grid", r_locf), ("null grid", r_null)):
 # ## Takeaways
 #
 # - `gapfill('table', 'ts', step_us, mode)` / `resample(...)` turn a stored
-#   bar table into a regular grid in one call — the step is raw
+#   bar table into a regular grid in one call - the step is raw
 #   microseconds (1m = 60_000_000) and generation is capped at 1M rows
 #   (`LimitError`, not an OOM).
 # - It treats the table as one series: store one bar table per instrument
 #   (a natural fit, since bar tables are cheap versioned tables in h5i-db).
-# - `'locf'` is causal but goes stale — and carries *all* columns, volume
+# - `'locf'` is causal but goes stale - and carries *all* columns, volume
 #   included; `'interpolate'` looks ahead and must never feed a backtest;
 #   `'null'` keeps the holes honest.
 # - Phantom returns are measurable: on the locf grid ~half the minutes show
-#   a zero return and kurtosis is ~10x the observed-pair series — headline
+#   a zero return and kurtosis is ~10x the observed-pair series - headline
 #   vol survives, but everything sensitive to the return *path* does not.
 
 # %%

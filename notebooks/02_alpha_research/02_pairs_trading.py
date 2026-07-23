@@ -5,8 +5,8 @@
 # Engle-Granger test, build a rolling hedge ratio, compute the spread z-score
 # *in SQL* with h5i-db's window functions, and backtest with lagged signals
 # and costs. The h5i-db twist: prices are loaded in two commits, so at the end
-# we re-run the whole pipeline against `h5i('prices', v_early)` — the exact
-# table an earlier study would have seen — and show that results are pinned to
+# we re-run the whole pipeline against `h5i('prices', v_early)` - the exact
+# table an earlier study would have seen - and show that results are pinned to
 # a data version, not to whatever the vendor file happens to contain today.
 
 # %%
@@ -58,7 +58,7 @@ print(f"v{v_early}: {c1['rows_total']:,} rows   v{c2['sequence']} (head): {c2['r
 # Three economically sensible candidates from the universe: KO/PEP, GS/JPM,
 # CVX/XOM. We pull log adjusted closes with a plain SQL scan and run the
 # Engle-Granger test (`statsmodels.coint`) on each. Correlated is not
-# cointegrated — the p-value tests whether the *spread* is stationary, which
+# cointegrated - the p-value tests whether the *spread* is stationary, which
 # is what mean reversion actually needs.
 
 # %%
@@ -92,7 +92,7 @@ scan = pd.DataFrame(
 scan.round(4)
 
 # %% [markdown]
-# Only CVX/XOM clears a 5% threshold on this sample — KO/PEP, the textbook
+# Only CVX/XOM clears a 5% threshold on this sample - KO/PEP, the textbook
 # pair, does not (their return correlation is high but the spread trends).
 # That is a typical scan outcome and worth internalizing: most "obvious"
 # pairs fail the stationarity test. We trade CVX/XOM.
@@ -100,7 +100,7 @@ scan.round(4)
 # ## 3. Rolling hedge ratio and the spread
 #
 # The hedge ratio is a rolling 252-day OLS beta of log XOM on log CVX
-# (rolling cov/var — same thing, vectorized). The spread
+# (rolling cov/var - same thing, vectorized). The spread
 # `log(XOM) - beta*log(CVX)` and its beta go into their own h5i table so the
 # signal step can run in SQL, and so the spread series itself is versioned
 # alongside the prices that produced it.
@@ -136,7 +136,7 @@ len(spread_df)
 # The trading signal is the spread's z-score against a 60-day window. h5i-db
 # gives us `rolling_avg(x, ts, n)` sugar for the mean and a standard
 # `stddev(...) OVER (... ROWS BETWEEN 59 PRECEDING AND CURRENT ROW)` for the
-# dispersion — one query, streaming over sorted storage, no pandas
+# dispersion - one query, streaming over sorted storage, no pandas
 # `rolling()` needed until the stateful backtest itself.
 
 # %%
@@ -156,12 +156,12 @@ zs.tail(3).round(4)
 # %% [markdown]
 # ## 5. Backtest: enter at |z| > 2, exit at zero-crossing
 #
-# The entry/exit rule is stateful, so we run a small explicit loop (2k rows —
+# The entry/exit rule is stateful, so we run a small explicit loop (2k rows -
 # instant). Hygiene:
 #
-# - positions are decided on **yesterday's z** (`shift(1)`) — no lookahead;
+# - positions are decided on **yesterday's z** (`shift(1)`) - no lookahead;
 # - daily P&L uses the **lagged** hedge ratio:
-#   `pos[t-1] * (dlog XOM - beta[t-1] * dlog CVX)` — the return of the book
+#   `pos[t-1] * (dlog XOM - beta[t-1] * dlog CVX)` - the return of the book
 #   you actually held, not of a spread whose beta silently rebalanced itself;
 # - costs: 10 bps per leg on notional traded, so a round turn on the pair
 #   costs ~`2 * (1 + |beta|) * 10` bps.
@@ -221,7 +221,7 @@ fig.tight_layout()
 # A weakly positive Sharpe with deep drawdowns: holding a diverging spread all
 # the way back to its mean is exactly how pairs books get hurt. With one pair,
 # a borderline p-value and no stop-loss, this is a methodology demo, not a
-# strategy — a real book would diversify across many pairs and cap divergence
+# strategy - a real book would diversify across many pairs and cap divergence
 # risk.
 #
 # ## 6. Store the signal and pin the run
@@ -250,7 +250,7 @@ db.sql("SELECT count(*) AS rows, min(ts) AS first, max(ts) AS last FROM h5i('sig
 # time travel makes this a one-string change: `FROM prices` becomes
 # `FROM h5i('prices', v_early)`. Running on the pre-2025 version reproduces
 # what a 2024 study would have found; running it twice on the same version is
-# bit-identical — the property that matters when a vendor restates history
+# bit-identical - the property that matters when a vendor restates history
 # under your feet.
 
 # %%
@@ -305,7 +305,7 @@ runs
 
 # %% [markdown]
 # The pre-2025 run sees a different sample (different p-value, different
-# Sharpe) — and re-running on that pinned version is exactly reproducible.
+# Sharpe) - and re-running on that pinned version is exactly reproducible.
 # "Which data did this number come from?" has a precise answer: a version
 # integer.
 #
@@ -313,7 +313,7 @@ runs
 #
 # - Engle-Granger on real data is humbling: of three sensible candidates only
 #   CVX/XOM was cointegrated at 5%. Correlation is not cointegration.
-# - The z-score ran entirely in SQL — `rolling_avg` sugar plus a standard
+# - The z-score ran entirely in SQL - `rolling_avg` sugar plus a standard
 #   `stddev ... OVER ROWS` window on the stored `spread` table.
 # - Backtest honesty: lagged z, lagged hedge ratio in the P&L, per-leg costs.
 #   The result (modest Sharpe, ugly drawdowns) is what single-pair books look

@@ -1,17 +1,17 @@
 # %% [markdown]
 # # A crash-safe paper-trading loop with full order attribution
 #
-# The hard part of a live loop is not the strategy — it is answering, a week
+# The hard part of a live loop is not the strategy - it is answering, a week
 # later, *"why did we send that order?"*. This recipe builds a sequential,
 # deterministic paper-trading loop where every stage is a versioned commit:
 # each feed chunk is one `append` to `trades`, the signal is computed in SQL
 # on exactly that head, and every order row **stores the trades version
 # (sequence number) that produced it**. Attribution stops being forensics
-# and becomes a join — and because `h5i('trades', v)` is O(1) time travel,
+# and becomes a join - and because `h5i('trades', v)` is O(1) time travel,
 # you can replay any order's exact signal input on demand.
 #
 # Crash safety comes for free: every commit is an atomic manifest swap, so a
-# `kill -9` mid-write leaves the previous head fully consistent — the loop
+# `kill -9` mid-write leaves the previous head fully consistent - the loop
 # restarts by asking the database where the feed stopped.
 
 # %%
@@ -25,7 +25,7 @@ import cookbook_utils as cu
 db = h5i_db.Database(cu.fresh_db("prod_paper"), create=True)
 
 # %% [markdown]
-# ## 1. Tables: feed, orders, positions — all append-only
+# ## 1. Tables: feed, orders, positions - all append-only
 #
 # Three pure-append tables. Append-only is not just a style choice: it keeps
 # the version chain compatible with `tail()` streaming reads, and it means
@@ -69,7 +69,7 @@ db.tables()
 # %% [markdown]
 # ## 2. The feed and the signal
 #
-# One session of tick data for two names, chunked into 5-minute deliveries —
+# One session of tick data for two names, chunked into 5-minute deliveries -
 # a deterministic stand-in for a live feed handler. The signal is a fast/slow
 # EWMA crossover on 1-minute closes, computed entirely in SQL against
 # whatever the `trades` head is at that moment: `time_bucket` builds the
@@ -104,7 +104,7 @@ def signal_sql(relation: str) -> str:
 # %% [markdown]
 # ## 3. The event loop: append chunk → SQL signal → append orders → mark
 #
-# Sequential and deterministic — no threads, no sleeps. Per chunk: one
+# Sequential and deterministic - no threads, no sleeps. Per chunk: one
 # commit for the ticks, one signal query on that exact head, at most one
 # commit for orders (a batch, never per-row), one for the marks. The commit
 # dict returned by `append` hands us the sequence number we stamp on each
@@ -160,7 +160,7 @@ print(f"loop done: {len(chunks)} chunks, {n_orders} orders, "
 # %% [markdown]
 # ## 4. Restart recovery: the database is the checkpoint
 #
-# If the process dies anywhere in the loop, no partial state exists — each
+# If the process dies anywhere in the loop, no partial state exists - each
 # commit either fully happened or didn't. On restart, the resume point is a
 # query, not a checkpoint file that might itself be stale:
 
@@ -175,8 +175,8 @@ resume
 # ## 5. Order attribution: replay the exact signal input
 #
 # Every order carries `data_version`. To audit one, point the *same* signal
-# SQL at `h5i('trades', <version>)` — O(1) time travel to the head the loop
-# saw — and confirm the decision. This is the difference between "we think
+# SQL at `h5i('trades', <version>)` - O(1) time travel to the head the loop
+# saw - and confirm the decision. This is the difference between "we think
 # the signal said buy" and "here is the signal, recomputed from the exact
 # bytes, saying buy".
 
@@ -202,7 +202,7 @@ held_after = db.sql(
 print(f"replayed signal at v{int(last_order['data_version'])}: "
       f"fast={row['fast']:.4f} slow={row['slow']:.4f} -> desired position {replayed_desired}")
 assert replayed_desired == held_after, "replayed decision must match the recorded position"
-print(f"recorded position after order: {held_after} — attribution verified")
+print(f"recorded position after order: {held_after} - attribution verified")
 
 # %% [markdown]
 # ## 6. The reader side: streaming new orders with `tail()`
@@ -210,8 +210,8 @@ print(f"recorded position after order: {held_after} — attribution verified")
 # A downstream consumer (risk checks, an execution bridge) follows the order
 # blotter with `tail('orders', after_version, poll_ms)`. Two production
 # rules: `tail` requires a **pure-append** version chain (any write/delete/
-# restore/compact in the range errors out — one reason our blotter is
-# append-only), and it is **unbounded** — it blocks until `LIMIT` rows have
+# restore/compact in the range errors out - one reason our blotter is
+# append-only), and it is **unbounded** - it blocks until `LIMIT` rows have
 # arrived, so always attach a LIMIT no larger than what you know is there,
 # or a query timeout.
 
@@ -229,7 +229,7 @@ db.sql(f"SELECT * FROM tail('orders', {after['sequence']}, 50) LIMIT {n}",
 #
 # The equity curve comes from the recorded marks. Then maintenance: a day of
 # 5-minute commits leaves ~78 small segments per table, so `compact()` merges
-# them — as its own audited commit. (Note the trade-off: a compact commit
+# them - as its own audited commit. (Note the trade-off: a compact commit
 # breaks the pure-append chain for `tail()` ranges that span it, so compact
 # *behind* your consumers' read positions.)
 
@@ -267,13 +267,13 @@ for t in ("trades", "orders", "positions"):
 # - One chunk = one commit; the commit's sequence number stamped into each
 #   order row makes attribution a join and replay a `h5i('trades', v)` query.
 # - Atomic commits are the crash-safety story: `kill -9` mid-write leaves the
-#   previous head intact, and the restart point is `SELECT max(ts)` — the
+#   previous head intact, and the restart point is `SELECT max(ts)` - the
 #   database is the checkpoint.
 # - Keep the blotter pure-append: it stays `tail()`-compatible for
 #   downstream consumers and tamper-evident for auditors. Always LIMIT (and
-#   ideally timeout) a `tail()` read — it blocks until enough rows arrive.
+#   ideally timeout) a `tail()` read - it blocks until enough rows arrive.
 # - Batch orders per cycle (never per-row commits), and `compact()` after the
-#   session — behind your readers — to merge the day's small segments.
+#   session - behind your readers - to merge the day's small segments.
 
 # %%
 db.close()

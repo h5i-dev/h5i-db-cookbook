@@ -1,11 +1,11 @@
 # h5i-db-cookbook
 
-Practical, quant-focused recipes for [h5i-db](https://github.com/h5i-dev/h5i-db) —
+Practical, quant-focused recipes for [h5i-db](https://github.com/h5i-dev/h5i-db) -
 the embedded, versioned time-series database for market data workloads.
 
 Every recipe exists twice: as an executed Jupyter notebook (`.ipynb`, read it on
 GitHub with outputs) and as an equivalent plain Python script (`.py`,
-[jupytext percent format](https://jupytext.readthedocs.io/) — run it, diff it,
+[jupytext percent format](https://jupytext.readthedocs.io/) - run it, diff it,
 copy from it). The `.py` files are the source of truth; notebooks are generated
 from them.
 
@@ -28,28 +28,28 @@ python notebooks/00_fundamentals/01_quickstart.py
 
 Real-data recipes download from Yahoo Finance on first run and cache to
 `data/cache/`, so everything is reproducible offline afterwards. Recipes that
-need tick-level data use realistic synthetic generators (`cookbook_utils/`) —
+need tick-level data use realistic synthetic generators (`cookbook_utils/`) -
 deterministic given a seed.
 
-> **WSL2 note:** keep databases on ext4 (your home dir), not `/mnt/c` —
+> **WSL2 note:** keep databases on ext4 (your home dir), not `/mnt/c` -
 > h5i-db's crash-safety relies on POSIX rename/fsync semantics.
 
 ## Recipes
 
-### 00 — Fundamentals
+### 00 - Fundamentals
 
 | Recipe | What you learn |
 |---|---|
-| [01 Quickstart](notebooks/00_fundamentals/01_quickstart.ipynb) | Create a DB, ingest ticks, first SQL, first time travel — in 5 minutes |
+| [01 Quickstart](notebooks/00_fundamentals/01_quickstart.ipynb) | Create a DB, ingest ticks, first SQL, first time travel - in 5 minutes |
 | [02 Designing market-data schemas](notebooks/00_fundamentals/02_designing_market_data_schemas.ipynb) | Trades/quotes/bars schemas, time columns, sort keys, Arrow types |
 | [03 Ingestion patterns](notebooks/00_fundamentals/03_ingestion_patterns.ipynb) | Parquet/CSV/pandas/polars in; append vs write; batching; conflict handling |
 | [04 SQL tour for quants](notebooks/00_fundamentals/04_sql_tour_for_quants.ipynb) | DataFusion SQL: windows, CTEs, `time_bucket`, `vwap`, `ewma`, rolling sugar |
 | [05 Time travel & versioning](notebooks/00_fundamentals/05_time_travel_and_versioning.ipynb) | `h5i('t', v)`, as-of reads, `versions()`, `restore`, snapshots |
 | [06 Previewable mutations](notebooks/00_fundamentals/06_previewable_mutations.ipynb) | plan → inspect → apply/discard; mutation policy gates |
 | [07 Streaming appends & tail](notebooks/00_fundamentals/07_streaming_appends_and_tail.ipynb) | Live feed simulation; append-only tails; incremental consumers |
-| [08 Maintenance](notebooks/00_fundamentals/08_maintenance.ipynb) | snapshot, compact, vacuum, verify — keeping a store healthy |
+| [08 Maintenance](notebooks/00_fundamentals/08_maintenance.ipynb) | snapshot, compact, vacuum, verify - keeping a store healthy |
 
-### 01 — Market data engineering
+### 01 - Market data engineering
 
 | Recipe | What you learn |
 |---|---|
@@ -62,7 +62,7 @@ deterministic given a seed.
 | [07 Tick data cleaning](notebooks/01_market_data_engineering/07_tick_data_cleaning.ipynb) | Outlier detection; previewable deletes; auditable corrections |
 | [08 NBBO consolidation](notebooks/01_market_data_engineering/08_nbbo_consolidation.ipynb) | Multi-venue feeds into a consolidated best bid/offer |
 
-### 02 — Alpha research
+### 02 - Alpha research
 
 | Recipe | What you learn |
 |---|---|
@@ -77,7 +77,7 @@ deterministic given a seed.
 | [09 Lead–lag analysis](notebooks/02_alpha_research/09_lead_lag.ipynb) | Cross-asset lead–lag with ASOF alignment |
 | [10 Portfolio rebalancing](notebooks/02_alpha_research/10_portfolio_rebalancing.ipynb) | Versioned holdings, turnover control, rebalance audit trail |
 
-### 03 — Risk & production
+### 03 - Risk & production
 
 | Recipe | What you learn |
 |---|---|
@@ -90,7 +90,7 @@ deterministic given a seed.
 | [07 Options & IV surfaces](notebooks/03_risk_and_production/07_options_iv_surface.ipynb) | Storing chains, surface snapshots, smile evolution |
 | [08 FX & crypto 24/7 data](notebooks/03_risk_and_production/08_fx_crypto_24_7.ipynb) | No sessions, no gaps: bucketing and rolling stats around the clock |
 | [09 Fixed-income curves](notebooks/03_risk_and_production/09_fixed_income_curves.ipynb) | Point-in-time yield curves, carry/rolldown, curve history |
-| [10 Performance tuning](notebooks/03_risk_and_production/10_performance_tuning.ipynb) | Pruning, compaction, resource limits, batching — and why it's fast |
+| [10 Performance tuning](notebooks/03_risk_and_production/10_performance_tuning.ipynb) | Pruning, compaction, resource limits, batching - and why it's fast |
 
 ## Layout
 

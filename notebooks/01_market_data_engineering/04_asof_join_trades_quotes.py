@@ -4,7 +4,7 @@
 # Attaching the prevailing quote to every trade is *the* microstructure
 # join: it powers trade signing, effective/realized spread measurement, TCA
 # and toxicity analytics. In h5i-db `asof_join` is a native SQL table
-# function over time-sorted storage — no round-trip through pandas — with
+# function over time-sorted storage - no round-trip through pandas - with
 # direction (`'backward'` / `'forward'`) and a staleness tolerance built in,
 # and it composes with CTEs and window functions like any other table.
 #
@@ -32,10 +32,10 @@ db = h5i_db.Database(cu.fresh_db("mde_asof"), create=True)
 #
 # To *score* trade signing we need trades whose true aggressor side we know,
 # so we derive the printed tape from the quote stream: each trade takes the
-# prevailing bid or ask (10% execute at mid — the hard case for
+# prevailing bid or ask (10% execute at mid - the hard case for
 # classification), 0.2–5ms of exchange reporting latency, and keeps its true
-# `side`. We also store a `marks` table — each trade's timestamp shifted
-# +5 minutes — which will drive the realized-spread lookup later.
+# `side`. We also store a `marks` table - each trade's timestamp shifted
+# +5 minutes - which will drive the realized-spread lookup later.
 
 # %%
 quotes = cu.make_quotes(
@@ -93,7 +93,7 @@ print(f"{len(tr):,} trades, {len(qp):,} quotes over 2 sessions")
 #
 # `asof_join(left, right, left_ts, right_ts, by_key)`: for each trade, the
 # latest quote at or before it, per symbol. Right-side columns that collide
-# get a `_right` suffix — here the quote's own timestamp arrives as
+# get a `_right` suffix - here the quote's own timestamp arrives as
 # `ts_right`, so trade-time minus `ts_right` is the quote's age. Because
 # both tables are stored time-ordered there is no sort phase to pay for:
 
@@ -128,7 +128,7 @@ assert np.allclose(cmp["bid"], cmp["bid_pd"]) and np.allclose(cmp["ask"], cmp["a
 print(f"asof_join matches pandas.merge_asof on all {len(cmp):,} trades")
 
 # %% [markdown]
-# There is also a keyword spelling — handy when the ASOF join is one clause
+# There is also a keyword spelling - handy when the ASOF join is one clause
 # of a larger statement. Two current limitations to know about: it requires
 # bare table names (no aliases), and the output columns are referenced
 # unqualified:
@@ -146,7 +146,7 @@ db.sql(
 # %% [markdown]
 # ## 3. Lee-Ready trade signing
 #
-# Quote rule first — above the mid is a buy, below is a sell — then the tick
+# Quote rule first - above the mid is a buy, below is a sell - then the tick
 # test for exact-mid prints (here via `lag(price)`; strictly Lee-Ready wants
 # the last *different* price, a refinement that matters little on this
 # tape). All in one statement: the asof join feeds a window function feeds a
@@ -185,8 +185,8 @@ print(f"mid prints (tick test): {(mid_prints['lr_side'] == mid_prints['side']).m
 pd.crosstab(signed["lr_side"], signed["side"], margins=True)
 
 # %% [markdown]
-# The quote rule is near-perfect — its only failure mode is a quote update
-# landing inside the trade's few-ms reporting latency — while mid prints
+# The quote rule is near-perfect - its only failure mode is a quote update
+# landing inside the trade's few-ms reporting latency - while mid prints
 # fall back to the roughly coin-flip tick test. On real TAQ data the
 # quote-rule share is lower and overall accuracy lands around 85–90%; the
 # split above shows exactly where the errors live.
@@ -194,8 +194,8 @@ pd.crosstab(signed["lr_side"], signed["side"], margins=True)
 # ## 4. Quoted, effective and realized spread
 #
 # - quoted: `ask - bid` at the prevailing quote,
-# - effective: `2·|price - mid|` — what aggressors actually paid,
-# - realized: `2·d·(price - mid₊₅ₘ)` — what liquidity providers actually
+# - effective: `2·|price - mid|` - what aggressors actually paid,
+# - realized: `2·d·(price - mid₊₅ₘ)` - what liquidity providers actually
 #   kept, using the mid 5 minutes later.
 #
 # The 5-minutes-later mid is the `marks` table asof-joined **forward**: the
@@ -241,18 +241,18 @@ fig.tight_layout()
 
 # %% [markdown]
 # Effective sits a notch below quoted because 10% of prints execute at mid.
-# Realized shows no *systematic* gap to effective — this synthetic flow
+# Realized shows no *systematic* gap to effective - this synthetic flow
 # carries no information, so on average the mid does not drift against the
 # liquidity provider after the trade (the per-symbol estimates scatter
 # around effective because 5-minute mid volatility dwarfs the spread; that
 # noisiness is faithful to the real-world estimator too). On a real tape
 # realized sits systematically *below* effective, and the gap
-# (2·d·(mid₊₅ₘ − mid), the price impact) is the adverse-selection cost —
+# (2·d·(mid₊₅ₘ − mid), the price impact) is the adverse-selection cost -
 # this decomposition is the standard way to measure it.
 #
 # ## 5. Tolerance: refuse stale quotes
 #
-# By default the asof join reaches arbitrarily far back — against a gappy
+# By default the asof join reaches arbitrarily far back - against a gappy
 # quote feed (outages, subsampled vendor files) that silently marks trades
 # against minutes-old NBBO. The optional tolerance (raw microseconds, like
 # every raw time argument in h5i-db) bounds the lookback: unmatched trades
@@ -283,17 +283,17 @@ for label, tol in [("no tolerance", None), ("60s tolerance", 60_000_000),
 # ## Takeaways
 #
 # - `asof_join('trades', 'quotes', 'ts', 'ts', 'symbol')` is the whole
-#   trades-vs-quotes alignment — per-key, time-correct, streaming on sorted
+#   trades-vs-quotes alignment - per-key, time-correct, streaming on sorted
 #   storage, and it agrees with `pandas.merge_asof` row for row.
 # - Direction and tolerance are first-class: `'forward'` fetched the
 #   5-minutes-later mid for realized spread; a microsecond tolerance turned
 #   stale-quote marking into visible, countable NULLs. Colliding right
 #   columns get `_right`.
-# - The join composes with the rest of SQL — Lee-Ready signing and the full
+# - The join composes with the rest of SQL - Lee-Ready signing and the full
 #   quoted/effective/realized decomposition are each one statement (CTEs +
 #   `lag()` + `CASE`).
 # - Scoring against ground truth requires a tape where trades and quotes
-#   share one price process — worth remembering before benchmarking signing
+#   share one price process - worth remembering before benchmarking signing
 #   accuracy on any synthetic data.
 
 # %%

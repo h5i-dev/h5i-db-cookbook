@@ -1,8 +1,8 @@
 # %% [markdown]
 # # A SQL tour for quants
 #
-# h5i-db's query layer is Apache DataFusion — full SQL with joins, CTEs and
-# window functions — extended with finance-native operators (`time_bucket`,
+# h5i-db's query layer is Apache DataFusion - full SQL with joins, CTEs and
+# window functions - extended with finance-native operators (`time_bucket`,
 # `rolling_avg`, `ewma`, `vwap`, ASOF joins) that exploit time-sorted
 # storage. This recipe is a guided tour: each stop is one concept applied to
 # a realistic task on a 50-name daily panel, ending with the resource guards
@@ -28,7 +28,7 @@ db.append("trades", trades)
 print(f"prices: {len(prices):,} rows   trades: {len(trades):,} rows")
 
 # %% [markdown]
-# A static reference table for later joins. `time_column` is optional —
+# A static reference table for later joins. `time_column` is optional -
 # reference data (sector maps, symbol masters) doesn't need one, though it
 # then gets none of the time-based machinery (pruning, ASOF, `time_bucket`).
 
@@ -51,7 +51,7 @@ db.sql("SELECT sector, count(*) AS names FROM sectors GROUP BY sector ORDER BY s
 # Segments are stored sorted by `ts` and the manifest records each segment's
 # time range, so a time predicate skips segments wholesale before any I/O.
 # Habit to build: **every** exploratory query on a big table starts with a
-# time filter — it is the difference between touching a week and touching
+# time filter - it is the difference between touching a week and touching
 # ten years. RFC3339 string literals compare directly against timestamp
 # columns.
 
@@ -86,9 +86,9 @@ db.sql(
 #
 # The three window patterns that cover 90% of daily-panel work:
 #
-# - `lag()` for returns — no self-join, no pandas round-trip;
+# - `lag()` for returns - no self-join, no pandas round-trip;
 # - `row_number()` for "latest N per symbol" (partition, order DESC, filter);
-# - an explicit `ROWS BETWEEN` frame for rolling moments — here a trailing
+# - an explicit `ROWS BETWEEN` frame for rolling moments - here a trailing
 #   20-day annualized volatility.
 
 # %%
@@ -142,13 +142,13 @@ db.sql(
 #
 # `rolling_avg(x, ts, n)` (also `rolling_sum/min/max`) is shorthand for a
 # trailing n-row mean in `ts` order. **One sharp edge:** it runs over the
-# result rows in global time order and is *not* partitioned by symbol — on a
+# result rows in global time order and is *not* partitioned by symbol - on a
 # multi-symbol table it will happily average AAPL into MSFT. Filter to one
 # symbol first (as below), or use the explicit
 # `avg(...) OVER (PARTITION BY symbol ...)` form for panels.
 #
 # `ewma(x, alpha)` is a proper window function and *does* respect
-# `PARTITION BY` — RiskMetrics-style smoothing in one line.
+# `PARTITION BY` - RiskMetrics-style smoothing in one line.
 
 # %%
 ma = db.sql(
@@ -173,7 +173,7 @@ ma.tail(3)
 # %% [markdown]
 # ## 5. CTEs and joins: a returns → volatility → sector pipeline
 #
-# CTEs keep multi-step research SQL readable — each stage is a named,
+# CTEs keep multi-step research SQL readable - each stage is a named,
 # testable intermediate, and the whole pipeline runs as one plan (no
 # materialized temporaries). Here: daily returns → trailing 20d vol →
 # join the sector map → the current risk picture by sector.
@@ -239,7 +239,7 @@ fig.tight_layout()
 # %% [markdown]
 # ## 6. Date machinery: `time_bucket`, `date_trunc`, `EXTRACT`
 #
-# `time_bucket` is the workhorse — here monthly closes via
+# `time_bucket` is the workhorse - here monthly closes via
 # `last_value(... ORDER BY ts)` inside the GROUP BY (the idiom for "closing"
 # values; no self-join needed), chained into monthly returns with `lag`.
 # `date_trunc` does the same truncation without the extra widths/timezone
@@ -332,7 +332,7 @@ db.sql(
 # %% [markdown]
 # ## 8. Resource guards: fail fast, not slow
 #
-# On a shared research box, the dangerous query is not the wrong one — it is
+# On a shared research box, the dangerous query is not the wrong one - it is
 # the accidentally huge one. Every `db.sql` call takes `timeout=` (seconds)
 # and `max_rows=`; blowing either raises a typed error (`TimeoutError`,
 # `LimitError`) with a `.code` your tooling can branch on. Set conservative
@@ -365,13 +365,13 @@ except h5i_db.TimeoutError as e:
 # - `lag` / `row_number` / `ROWS BETWEEN` frames cover returns, latest-N and
 #   rolling risk without leaving SQL; `last_value(x ORDER BY ts)` in a
 #   GROUP BY is the closing-value idiom.
-# - `rolling_avg` sugar is trailing-N-rows in global time order — filter to
+# - `rolling_avg` sugar is trailing-N-rows in global time order - filter to
 #   one symbol first; `ewma` is a real window function and honors
 #   `PARTITION BY`.
 # - CTE pipelines (returns → vol → sector join) run as one plan; static
 #   reference tables can skip `time_column` entirely.
 # - `timeout=` and `max_rows=` turn runaway queries into typed, catchable
-#   errors — production etiquette for shared databases.
+#   errors - production etiquette for shared databases.
 
 # %%
 db.close()

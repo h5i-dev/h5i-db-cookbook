@@ -5,8 +5,8 @@
 # on every risk desk, and h5i-db ships it as a native SQL window function:
 # `ewma(x, alpha) OVER (...)`. This recipe estimates EWMA vol in SQL,
 # cross-checks it against `pandas.ewm` to the last bit, then uses it the way
-# practitioners actually do — scaling exposure to hold a constant 10%
-# annualized risk target — and compares raw vs vol-targeted equity curves on
+# practitioners actually do - scaling exposure to hold a constant 10%
+# annualized risk target - and compares raw vs vol-targeted equity curves on
 # real data.
 
 # %%
@@ -23,7 +23,7 @@ db = h5i_db.Database(cu.fresh_db("alpha_voltarget"), create=True)
 # ## 1. Real prices, and a portfolio return series in SQL
 #
 # Ten liquid names, daily, 2020–2026 (cached). Our traded asset is the
-# equal-weight portfolio of the ten — a reasonable broad-equity proxy with a
+# equal-weight portfolio of the ten - a reasonable broad-equity proxy with a
 # proper covid drawdown and the 2022 bear market in-sample. Per-symbol simple
 # returns come from `lag()` per partition; the equal-weight portfolio is just
 # the cross-sectional average per day. We keep only days where all ten names
@@ -76,13 +76,13 @@ db.append("port_returns", port.cast(ret_schema), note="equal-weight 10-name port
 print(f"{port.num_rows} daily portfolio returns")
 
 # %% [markdown]
-# ## 2. EWMA variance in SQL — and the lambda/alpha dictionary
+# ## 2. EWMA variance in SQL - and the lambda/alpha dictionary
 #
 # RiskMetrics writes the recursion as
 # $\sigma_t^2 = \lambda\,\sigma_{t-1}^2 + (1-\lambda)\,r_t^2$ with
 # $\lambda = 0.94$ for daily data. h5i-db's `ewma(x, alpha)` uses the smoothing
 # weight on the *new* observation, so **alpha = 1 − lambda = 0.06**. Same
-# recursion, opposite naming convention — a perennial source of off-by-one-
+# recursion, opposite naming convention - a perennial source of off-by-one-
 # convention bugs. The 0.94/0.06 pair implies a center of mass of
 # λ/(1−λ) ≈ 16 trading days; at other bar frequencies you would rescale
 # (e.g. λ closer to 0.97 for weekly bars) rather than reuse 0.94 blindly.
@@ -108,7 +108,7 @@ ewma_sql.set_index("ts").tail(3).round(6)
 # ## 3. Vol targeting
 #
 # Target 10% annualized. Each day the position is scaled by
-# `leverage_t = target_vol / ewma_vol_{t-1}` — **yesterday's** vol estimate
+# `leverage_t = target_vol / ewma_vol_{t-1}` - **yesterday's** vol estimate
 # sizes today's exposure; using today's would leak the day's own squared
 # return into its sizing. Leverage is capped at 2x (financing and mandate
 # reality), and we charge 5 bps on each day's change in gross exposure so the
@@ -168,7 +168,7 @@ fig.tight_layout()
 # The mechanics show up exactly where theory says they should: realized vol of
 # the targeted book lands near 10% (versus ~24% raw), and the max drawdown
 # shrinks by roughly two-thirds because the strategy de-levers into vol
-# spikes (covid 2020, the 2022 bear). The Sharpe improves modestly — vol
+# spikes (covid 2020, the 2022 bear). The Sharpe improves modestly - vol
 # targeting is primarily a *risk shaping* tool that exploits the negative
 # vol/return correlation in equities; treat any Sharpe pickup as a bonus, not
 # the objective.
@@ -177,7 +177,7 @@ fig.tight_layout()
 # ## Takeaways
 #
 # - `ewma(ret*ret, 0.06) OVER (ORDER BY ts)` reproduces the RiskMetrics
-#   recursion in one SQL window call — verified bit-exact against
+#   recursion in one SQL window call - verified bit-exact against
 #   `pandas.ewm(alpha=0.06, adjust=False)`.
 # - Remember the dictionary: h5i-db's `alpha` = 1 − RiskMetrics `lambda`.
 #   Daily λ=0.94 → `ewma(x, 0.06)`, ~16-day center of mass; rescale for other
@@ -185,7 +185,7 @@ fig.tight_layout()
 # - Size with *yesterday's* vol estimate. Same-day sizing is lookahead, and it
 #   flatters exactly the days that matter.
 # - On this sample, targeting held realized vol at ~10% and cut max drawdown
-#   from ~32% to ~11% with a small Sharpe gain — the honest selling point of
+#   from ~32% to ~11% with a small Sharpe gain - the honest selling point of
 #   vol targeting.
 # - Derived series (`port_returns`) live as first-class versioned tables, so
 #   the whole risk pipeline is SQL-queryable and reproducible.

@@ -1,8 +1,8 @@
 # %% [markdown]
 # # Event studies: CARs with ASOF-aligned announcement dates
 #
-# The classic event-study pipeline — market-model abnormal returns, cumulative
-# abnormal returns (CAR) around announcements — has one perennially fiddly
+# The classic event-study pipeline - market-model abnormal returns, cumulative
+# abnormal returns (CAR) around announcements - has one perennially fiddly
 # step: announcements do not land on trading days. Earnings drop on Saturday,
 # M&A leaks on a holiday, and every study needs "the first trading session at
 # or after the announcement". That is exactly an ASOF join with `'forward'`
@@ -12,7 +12,7 @@
 # Plan:
 #
 # 1. build a 100-name daily panel and inject a *known* announcement-day shock
-#    (+2% day-0, then a 10-day drift) into a treated half of 100 events —
+#    (+2% day-0, then a 10-day drift) into a treated half of 100 events -
 #    so the study has a ground truth to recover,
 # 2. store `prices` and `events` tables, align events to trading sessions with
 #    `asof_join(..., 'forward', tolerance)`,
@@ -34,12 +34,12 @@ db = h5i_db.Database(cu.fresh_db("alpha_events"), create=True)
 #
 # `make_daily_prices` gives a factor-driven panel (common market factor +
 # idiosyncratic noise) with no events in it. We add them ourselves, in pandas,
-# *before* storing: 100 events, one per symbol, at random calendar timestamps —
+# *before* storing: 100 events, one per symbol, at random calendar timestamps -
 # including weekends, deliberately. For the treated half we scale the
 # price path from the effective session onward: a +2% level shift on day 0
 # and a +0.15%/day drift over the next 10 sessions (a caricature of
 # post-announcement drift). Controls get nothing, so their CAR should be
-# flat at zero — a built-in placebo check.
+# flat at zero - a built-in placebo check.
 
 # %%
 N_SYMBOLS, N_DAYS, N_EVENTS = 100, 650, 100
@@ -52,7 +52,7 @@ sess_us = np.sort(prices["ts"].astype("int64").unique())  # session closes, epoc
 rng = np.random.default_rng(7)
 
 # One event per symbol: pick the *effective* session j, then draw the
-# announcement uniformly between the previous close and that close — Monday
+# announcement uniformly between the previous close and that close - Monday
 # sessions naturally pick up weekend announcements.
 event_sym = rng.permutation(symbols)[:N_EVENTS]
 event_j = rng.integers(150, len(sess_us) - 30, N_EVENTS)
@@ -74,10 +74,10 @@ print(f"{treated.sum()} treated / {(~treated).sum()} control events")
 print("weekend announcements:", (pd.to_datetime(ann_us, unit="us", utc=True).dayofweek >= 5).sum())
 
 # %% [markdown]
-# ## 2. Store `prices`, `events` — and the trading calendar itself
+# ## 2. Store `prices`, `events` - and the trading calendar itself
 #
 # All three are h5i-db tables with `ts` as the time column. The events table
-# carries the *raw announcement timestamp*, not a trading day — resolving
+# carries the *raw announcement timestamp*, not a trading day - resolving
 # that mapping is the database's job, not the ingest script's. The third
 # table, `sessions`, is the trading calendar: one row per session close,
 # derived from the panel we actually have (so holidays are whatever the data
@@ -155,8 +155,8 @@ db.tables()
 # `asof_join(left, right, lts, rts, key, 'forward', tolerance)` matches each
 # event to the *first* session at or after the announcement, keyed here on
 # the calendar id (one calendar in this study; a global book would carry
-# several). The tolerance is in raw time units — microseconds, matching the
-# `timestamp[us, UTC]` column —
+# several). The tolerance is in raw time units - microseconds, matching the
+# `timestamp[us, UTC]` column -
 # and 7 days is a generous cap that surfaces calendar problems as NULLs
 # instead of silently matching weeks later. The right table's colliding `ts`
 # comes back as `ts_right`: announcement and effective session side by side.
@@ -164,7 +164,7 @@ db.tables()
 # output straight back to `prices` for the day-0 close, all in one statement.
 #
 # One operational note: joining the 100-row events table against the 650-row
-# calendar (rather than the 65k-row price panel) keeps the join tiny — derive
+# calendar (rather than the 65k-row price panel) keeps the join tiny - derive
 # compact, purpose-built tables and join those. We assert one output row per
 # event and cross-check the session mapping against a numpy `searchsorted`
 # on the calendar; cheap asserts like these turn alignment mistakes into
@@ -194,7 +194,7 @@ weekend.assign(
 ).head(6)
 
 # %% [markdown]
-# Every weekend announcement lands on the following Monday's session — no
+# Every weekend announcement lands on the following Monday's session - no
 # calendar arithmetic, no `BusinessDay` offsets, and it would work unchanged
 # for holidays because the join targets the sessions *actually present* in
 # the price table.
@@ -202,7 +202,7 @@ weekend.assign(
 # ## 4. Returns and the market factor, in SQL
 #
 # Simple returns per symbol via `lag()`, and the equal-weight market return
-# as a window average over each session — one statement, computed on sorted
+# as a window average over each session - one statement, computed on sorted
 # storage.
 
 # %%
@@ -290,7 +290,7 @@ fig.tight_layout()
 # %% [markdown]
 # The study recovers what we injected: the treated group jumps ~+2% on day 0
 # (a sharp, highly significant one-day difference) and drifts toward ~+3.5%
-# by day +10, while the control CAR stays inside its band around zero — the
+# by day +10, while the control CAR stays inside its band around zero - the
 # placebo behaves. Note how much weaker the CAR[+10] t-stat is than the
 # day-0 one: cumulating 21 days of idiosyncratic noise on ~50 events erodes
 # power quickly, which is exactly why real event studies live and die by
@@ -302,7 +302,7 @@ fig.tight_layout()
 #
 # - `asof_join(..., 'forward', tolerance)` against a materialized trading
 #   calendar is the right primitive for "first session at or after the
-#   announcement" — holiday-agnostic, with NULLs (not silent garbage) past
+#   announcement" - holiday-agnostic, with NULLs (not silent garbage) past
 #   the tolerance. The tolerance is raw microseconds, matching the
 #   `timestamp[us, UTC]` time column.
 # - `asof_join(...)` composes like any relation: one statement chained the

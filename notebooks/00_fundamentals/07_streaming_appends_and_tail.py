@@ -4,13 +4,13 @@
 # An h5i-db table with an append-only history doubles as a message log:
 # every `append` is one commit, commits are strictly ordered, and a reader
 # that remembers the last version it processed can fetch exactly the rows
-# added since — no timestamps-as-cursors guesswork, no missed or double
+# added since - no timestamps-as-cursors guesswork, no missed or double
 # rows. That turns "intraday ticks land in the research database with a
 # one-day lag" into "the research database *is* the feed consumer". In this
 # recipe we:
 #
 # 1. simulate a live tick feed as a writer appending in chunks,
-# 2. consume it with SQL `tail('trades', after_version, poll_ms)` — and see
+# 2. consume it with SQL `tail('trades', after_version, poll_ms)` - and see
 #    why the `LIMIT` is not optional,
 # 3. show the simpler high-water-mark polling pattern used in production,
 # 4. maintain 1-minute bars **incrementally**, recomputing only the buckets
@@ -32,11 +32,11 @@ db = h5i_db.Database(cu.fresh_db("00_streaming"), create=True)
 # `tail` works on a **pure-append version chain**: any `write`, delete,
 # replace or restore in the version range breaks the incremental diff (we
 # demonstrate this in section 5). So streaming tables should be append-only
-# by construction — raw feeds usually are.
+# by construction - raw feeds usually are.
 #
 # We interleave writer and reader sequentially in one process. That is not a
 # limitation of the database (handles from different processes coordinate
-# through optimistic concurrency — see the multi-writer recipe); it keeps
+# through optimistic concurrency - see the multi-writer recipe); it keeps
 # this notebook deterministic.
 
 # %%
@@ -55,13 +55,13 @@ print(f"{n:,} trades -> {N_CHUNKS} feed chunks of ~{step:,} rows")
 #
 # The reader's cursor is a **version number**, not a timestamp.
 # `tail('trades', after_version, poll_ms)` streams every row committed after
-# `after_version`, polling for new commits every `poll_ms` — which makes it
+# `after_version`, polling for new commits every `poll_ms` - which makes it
 # an *unbounded* source: without a `LIMIT` the query never finishes, it
 # just waits for the next commit. So the reader first peeks at
 # `versions()` to learn how many rows are actually available, then tails
 # with exactly that `LIMIT`.
 #
-# We also maintain 1-minute bars incrementally as rows arrive — but only
+# We also maintain 1-minute bars incrementally as rows arrive - but only
 # for the buckets the new batch touched. The first affected bucket is the
 # minute containing the batch's earliest row; everything before that is
 # closed and never recomputed. `read(time_start=...)` (raw microseconds)
@@ -115,7 +115,7 @@ assert rows_seen == n
 print(f"\nreader consumed all {rows_seen:,} rows; cursor at version {last_version}")
 
 # %% [markdown]
-# The incremental bars must equal a from-scratch rollup — one SQL
+# The incremental bars must equal a from-scratch rollup - one SQL
 # `time_bucket` over the full table is the ground truth:
 
 # %%
@@ -137,7 +137,7 @@ pd.testing.assert_frame_equal(
 print(f"{len(full)} incremental bars match the full recompute exactly")
 
 # %% [markdown]
-# ## 3. `tail` is unbounded — respect the LIMIT
+# ## 3. `tail` is unbounded - respect the LIMIT
 #
 # Ask for more rows than have been committed and `tail` does exactly what a
 # feed consumer should: it *waits* for the next commit. In a notebook that
@@ -153,13 +153,13 @@ try:
     )
 except h5i_db.TimeoutError as e:
     print(f"{type(e).__name__}: code={e.code!r} retryable={e.retryable}")
-    print("tail kept polling for a commit that never came — the timeout, not")
+    print("tail kept polling for a commit that never came - the timeout, not")
     print("the LIMIT, ended the query.")
 
 # %% [markdown]
 # One more streaming caveat: `tail` produces an unbounded stream, so
 # pipeline-breaking operators (aggregations, sorts) cannot run directly on
-# top of it. Consume rows first, aggregate client-side — exactly what the
+# top of it. Consume rows first, aggregate client-side - exactly what the
 # incremental-bar loop above does.
 #
 # ## 4. The high-water-mark pattern (no `tail` required)
@@ -168,7 +168,7 @@ except h5i_db.TimeoutError as e:
 # compare the head version to your cursor and range-read only the new rows.
 # `read(time_start=...)` prunes on the time column, so re-reading "everything
 # after my high-water mark" costs proportionally to the new data, not the
-# table size. This is the pattern to reach for first — `tail` adds value
+# table size. This is the pattern to reach for first - `tail` adds value
 # when you want push-style blocking delivery.
 
 # %%
@@ -184,7 +184,7 @@ if head > cursor_version:
 # %% [markdown]
 # ## 5. Breaking the pure-append chain
 #
-# Apply any non-append commit — here a one-minute `delete_range` — and
+# Apply any non-append commit - here a one-minute `delete_range` - and
 # `tail` across that version can no longer compute an incremental diff. The
 # error is loud and specific, which is the point: silent gaps are what kill
 # feed consumers.
@@ -209,7 +209,7 @@ except h5i_db.H5iError as e:
 # ## Batch-size guidance
 #
 # Every commit writes a manifest and at least one Parquet segment, so
-# commits-per-second — not rows-per-commit — is what you should budget:
+# commits-per-second - not rows-per-commit - is what you should budget:
 #
 # - **Batch ticks into commits** (per second, per venue message-block, per
 #   1k-10k rows). One row per commit is pathological: thousands of tiny
@@ -218,7 +218,7 @@ except h5i_db.H5iError as e:
 #   delivery latency floor. A 1 s writer batch + `poll_ms=25` reader gives
 #   ~1 s end-to-end.
 # - After a day of small streaming appends, `db.compact("trades")` merges
-#   the small segments (recipe 08). Compaction is a version like any other —
+#   the small segments (recipe 08). Compaction is a version like any other -
 #   but note it breaks pure-append `tail` chains across it, so compact at
 #   session boundaries, not mid-stream.
 #
@@ -227,13 +227,13 @@ except h5i_db.H5iError as e:
 # - Append-only tables double as message logs: the reader's cursor is a
 #   **version number**, and `tail('t', after_version, poll_ms)` delivers
 #   exactly-once, in-order rows after it.
-# - `tail` is unbounded by design — always size the `LIMIT` from
+# - `tail` is unbounded by design - always size the `LIMIT` from
 #   `versions()` and set a `timeout=` backstop; aggregate after consuming,
 #   not inside the stream.
 # - The high-water-mark pattern (`versions()` delta + `read(time_start=hwm)`)
 #   is the simpler production default; time-column pruning makes it cheap.
 # - Incremental bar maintenance falls out of the same idea: only recompute
-#   buckets the new batch touched — verified equal to the full rollup.
+#   buckets the new batch touched - verified equal to the full rollup.
 # - `tail` requires a pure-append chain and fails loudly (not silently)
 #   when a mutation lands in the range: keep streaming tables append-only
 #   by policy.

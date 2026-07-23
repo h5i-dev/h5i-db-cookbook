@@ -4,12 +4,12 @@
 # Execution desks live and die by benchmark arithmetic: interval VWAP, TWAP,
 # arrival price, slippage in basis points. All of it is bucketed, weighted
 # aggregation over a trade tape plus one point-in-time lookup against the
-# quote stream — which is exactly the shape of query h5i-db's `time_bucket`,
+# quote stream - which is exactly the shape of query h5i-db's `time_bucket`,
 # `vwap()` (aggregate *and* window function) and `asof_join` are built for.
 #
 # We compute full-day and 30-minute interval VWAPs, contrast them with TWAP
 # where volume skew makes them diverge, then benchmark a simulated parent
-# order — 50k shares of AAPL worked over an hour — against interval VWAP
+# order - 50k shares of AAPL worked over an hour - against interval VWAP
 # and arrival mid.
 
 # %%
@@ -30,7 +30,7 @@ db = h5i_db.Database(cu.fresh_db("mde_vwap"), create=True)
 # describe the *same* market, so we derive the printed tape from the quote
 # stream: each trade lifts the offer or hits the bid of the prevailing quote
 # (10% execute at mid), with a small exchange latency. (The cookbook's
-# independent trade/quote generators share only the opening price — fine for
+# independent trade/quote generators share only the opening price - fine for
 # bar recipes, useless for quote-relative benchmarks.)
 
 # %%
@@ -72,7 +72,7 @@ print(f"{len(tr):,} trades derived from {len(qp):,} quotes")
 # %% [markdown]
 # ## 2. Full-day and interval VWAP
 #
-# `vwap(price, size)` is a native aggregate, so day VWAP is a one-liner —
+# `vwap(price, size)` is a native aggregate, so day VWAP is a one-liner -
 # with `time_bucket('1d', ts, 'America/New_York')` cutting sessions at New
 # York midnight so the numbers stay DST-safe. The same statement at
 # `'30m'` gives the interval VWAPs an execution scheduler would target.
@@ -103,7 +103,7 @@ ivwap.head(6)
 # ## 3. TWAP vs VWAP
 #
 # TWAP weights every minute equally; VWAP weights minutes by volume. With a
-# U-shaped volume profile, VWAP concentrates weight at the open and close —
+# U-shaped volume profile, VWAP concentrates weight at the open and close -
 # so whenever the price near the extremes differs from the middle of the
 # day, the two benchmarks part ways. We build TWAP from 1-minute closes
 # (bars as a CTE, `last_value(... ORDER BY ts)` for the close) and measure
@@ -130,7 +130,7 @@ bench[["session", "symbol", "day_vwap", "twap", "vwap_minus_twap_bps"]]
 # %% [markdown]
 # A few bps either way, entirely driven by whether the heavy open/close
 # volume printed above or below the day's average price. The running view
-# makes the mechanics visible — `vwap()` also works as a *window* function,
+# makes the mechanics visible - `vwap()` also works as a *window* function,
 # so cumulative VWAP needs no manual `sum(pv)/sum(v)` bookkeeping:
 
 # %%
@@ -197,8 +197,8 @@ print(f"{len(fills):,} fills, {fills['size'].sum():,} shares, "
 
 # %% [markdown]
 # `asof_join` takes stored table names, so we first snapshot the quote
-# window around order receipt into its own small table — desks persist
-# exactly such windows for later TCA review — and join the one-row parent
+# window around order receipt into its own small table - desks persist
+# exactly such windows for later TCA review - and join the one-row parent
 # order against it. As a cross-check, we confirm the asof lookup agrees
 # with an explicit "latest quote at or before 14:00" point query on the
 # full quote table.
@@ -240,7 +240,7 @@ arrival
 
 # %% [markdown]
 # `asof_join` picked the last quote at or before 14:00:00 (`quote_ts` shows
-# how stale it was — colliding right-side columns get a `_right` suffix).
+# how stale it was - colliding right-side columns get a `_right` suffix).
 # Now the scorecard: fill VWAP vs interval VWAP and vs arrival.
 
 # %%
@@ -285,8 +285,8 @@ ax.legend(loc="best", fontsize=8)
 fig.tight_layout()
 
 # %% [markdown]
-# Paying the offer costs roughly the half-spread versus interval VWAP —
-# exactly what a POV schedule of marketable orders should show — while
+# Paying the offer costs roughly the half-spread versus interval VWAP -
+# exactly what a POV schedule of marketable orders should show - while
 # slippage vs arrival additionally carries the price drift over the hour
 # (implementation shortfall).
 #
@@ -305,11 +305,11 @@ eq
 # ## Takeaways
 #
 # - `vwap(price, size)` works as an aggregate (day/interval VWAP with
-#   `time_bucket`) and as a window function (running VWAP) — no manual
+#   `time_bucket`) and as a window function (running VWAP) - no manual
 #   `sum(pv)/sum(v)` scaffolding; `wavg(w, x)` is the kdb-style spelling.
 # - TWAP from 1-minute closes is a CTE away; VWAP-TWAP divergence falls out
 #   in bps per session, driven by U-shaped volume.
-# - Arrival price is a one-row `asof_join` against a stored quote window —
+# - Arrival price is a one-row `asof_join` against a stored quote window -
 #   and it is cheap to cross-check against an explicit point query, a habit
 #   worth keeping for any benchmark that moves money.
 # - Benchmarks are only meaningful on a consistent tape: derive (or verify)
