@@ -100,4 +100,6 @@ python scripts/build_notebooks.py            # all recipes
 python scripts/build_notebooks.py 00_fundamentals/01_quickstart
 ```
 
-License: Apache-2.0
+## License 
+
+Apache-2.0
