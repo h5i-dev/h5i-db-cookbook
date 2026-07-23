@@ -3,12 +3,6 @@
 Practical, quant-focused recipes for [h5i-db](https://github.com/h5i-dev/h5i-db) -
 the embedded, versioned time-series database for market data workloads.
 
-Every recipe exists twice: as an executed Jupyter notebook (`.ipynb`, read it on
-GitHub with outputs) and as an equivalent plain Python script (`.py`,
-[jupytext percent format](https://jupytext.readthedocs.io/) - run it, diff it,
-copy from it). The `.py` files are the source of truth; notebooks are generated
-from them.
-
 ## Setup
 
 ```bash
