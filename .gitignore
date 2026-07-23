@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Cookbook: recipe databases and cached market data are disposable/re-downloadable
+data/dbs/
+data/cache/
