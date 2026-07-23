@@ -1,0 +1,15 @@
+# h5i-db itself: build from source until the PyPI release lands —
+#   maturin build -m ../h5i-db/crates/h5i-db-python/Cargo.toml
+#   pip install ../h5i-db/target/wheels/h5i_db-*.whl
+pyarrow>=14
+pandas>=2.0
+polars>=1.0
+numpy>=1.26
+matplotlib>=3.8
+scipy>=1.11
+statsmodels>=0.14
+yfinance>=0.2.40
+jupytext>=1.16
+nbformat>=5.9
+nbclient>=0.9
+ipykernel>=6.29

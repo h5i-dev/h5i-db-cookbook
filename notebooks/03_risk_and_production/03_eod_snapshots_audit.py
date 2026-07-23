@@ -1,0 +1,239 @@
+# %% [markdown]
+# # EOD snapshots and the audit trail regulators actually ask for
+#
+# The question that arrives eighteen months later is never "what is the price
+# now" — it is *"what did your systems know at the close of business on
+# 2026-06-02?"*. If your answer involves restoring backup tapes, you have
+# already lost the meeting. In h5i-db an end-of-day cut is a named snapshot:
+# a checksummed pin of the table manifest, O(1) to create, addressable
+# forever from SQL as `h5i('trades', 'eod-2026-06-02')`.
+#
+# This recipe builds a small EOD pipeline — append the day's feed, run
+# data-quality checks, snapshot, log — then answers the regulator's question
+# three ways, diffs two EOD cuts in SQL, and closes with integrity
+# attestation (`verify(deep=True)`) and retention (`vacuum`).
+
+# %%
+import pandas as pd
+import pyarrow as pa
+import h5i_db
+
+import cookbook_utils as cu
+
+db = h5i_db.Database(cu.fresh_db("prod_eod"), create=True)
+
+# %% [markdown]
+# ## 1. Tables: the feed, and our own snapshot log
+#
+# One honest API note up front: the Python API currently has snapshot
+# *creation* only (`db.snapshot(name, tables=[...], note=...)`); listing
+# snapshots is a CLI feature (`h5i-db snapshot list`). Production pipelines
+# want the catalog queryable next to the data, so we keep our own
+# `snapshot_log` table — each EOD run appends one row with the name, pinned
+# sequence and manifest checksum returned by `snapshot()`. The log is itself
+# versioned and append-only, which is exactly what an auditor wants a log
+# to be.
+
+# %%
+trade_schema = pa.schema(
+    [
+        pa.field("ts", pa.timestamp("us", tz="UTC"), nullable=False),
+        pa.field("symbol", pa.string()),
+        pa.field("price", pa.float64()),
+        pa.field("size", pa.int64()),
+        pa.field("exchange", pa.string()),
+        pa.field("side", pa.string()),
+    ]
+)
+db.create_table("trades", trade_schema, time_column="ts", sort_key=["ts", "symbol"])
+
+log_schema = pa.schema(
+    [
+        pa.field("ts", pa.timestamp("us", tz="UTC"), nullable=False),
+        pa.field("snapshot_name", pa.string()),
+        pa.field("table_name", pa.string()),
+        pa.field("pinned_sequence", pa.int64()),
+        pa.field("manifest_checksum", pa.string()),
+        pa.field("note", pa.string()),
+    ]
+)
+db.create_table("snapshot_log", log_schema, time_column="ts")
+db.tables()
+
+# %% [markdown]
+# ## 2. The EOD pipeline: append, check, snapshot, log
+#
+# Three simulated production days. Each day: one atomic `append` of the
+# day's feed (with a note), a minimal data-quality gate (row count, price
+# positivity, universe completeness), and — only if the gate passes — a named
+# snapshot plus a log row. The snapshot dict returns, per table, the pinned
+# version and a manifest checksum: cryptographic evidence of exactly what the
+# name refers to.
+
+# %%
+all_trades = cu.make_trades(days=3, trades_per_day=20_000).to_pandas()
+all_trades["day"] = all_trades["ts"].dt.date
+
+def eod_checks(day: str) -> dict:
+    row = db.sql(
+        f"""
+        SELECT count(*) AS rows, count(DISTINCT symbol) AS symbols,
+               min(price) AS px_min, max(price) AS px_max
+        FROM trades
+        WHERE ts >= '{day}T00:00:00Z' AND ts < '{day}T23:59:59Z'
+        """
+    ).to_pandas().iloc[0]
+    return {
+        "rows": int(row["rows"]),
+        "symbols_ok": int(row["symbols"]) == 3,
+        "prices_ok": bool(row["px_min"] > 0),
+        "nonempty": int(row["rows"]) > 0,
+    }
+
+last_snap = None
+for day, chunk in all_trades.groupby("day", sort=True):
+    data = pa.Table.from_pandas(
+        chunk.drop(columns="day").sort_values(["ts", "symbol"]), schema=trade_schema,
+        preserve_index=False,
+    )
+    commit = db.append("trades", data, note=f"{day} feed")
+    checks = eod_checks(str(day))
+    assert all(v for k, v in checks.items() if k != "rows"), f"EOD gate failed: {checks}"
+
+    last_snap = db.snapshot(f"eod-{day}", tables=["trades"], note=f"EOD risk cut {day}")
+    entry = next(iter(last_snap["entries"].values()))
+    db.append("snapshot_log", pa.table({
+        "ts": pa.array([pd.Timestamp(last_snap["created_at_ns"], unit="ns", tz="UTC")],
+                       type=pa.timestamp("us", tz="UTC")),
+        "snapshot_name": [last_snap["name"]],
+        "table_name": [entry["table_name"]],
+        "pinned_sequence": [entry["sequence"]],
+        "manifest_checksum": [entry["manifest_checksum"]],
+        "note": [last_snap["note"]],
+    }))
+    print(f"{day}: appended {data.num_rows:,} rows as v{commit['sequence']}, "
+          f"checks {checks}, snapshot 'eod-{day}'")
+
+# %% [markdown]
+# The snapshot dict itself — name, creation time, and per-table pins with
+# checksums. This is what lands in the log:
+
+# %%
+last_snap
+
+# %%
+db.sql(
+    """
+    SELECT ts, snapshot_name, pinned_sequence, substr(manifest_checksum, 1, 12) AS checksum
+    FROM snapshot_log ORDER BY ts
+    """
+).to_pandas()
+
+# %% [markdown]
+# ## 3. "What did you know on 2026-06-02?" — three ways to answer
+#
+# The same read point is addressable by **snapshot name** (business meaning:
+# the EOD cut), by **version number** (from the log's `pinned_sequence`), and
+# by **as-of commit time** (wall-clock: "whatever was committed before T").
+# All three are O(1) manifest lookups, not replays.
+
+# %%
+by_name = db.sql(
+    """
+    SELECT count(*) AS rows, max(ts) AS last_trade,
+           round(sum(price * size) / sum(size), 2) AS vwap_all
+    FROM h5i('trades', 'eod-2026-06-02')
+    """
+).to_pandas()
+by_name
+
+# %%
+# By version number: the log row tells us which sequence the name pins.
+pinned = db.sql(
+    "SELECT pinned_sequence FROM snapshot_log WHERE snapshot_name = 'eod-2026-06-02'"
+).to_pandas()["pinned_sequence"].iloc[0]
+by_version = db.read("trades", version=int(pinned))
+
+# By commit wall-clock time: the append's committed_at_ns from versions().
+v2 = [v for v in db.versions("trades") if v["sequence"] == pinned][0]
+as_of = pd.Timestamp(v2["committed_at_ns"], unit="ns", tz="UTC").isoformat()
+by_time = db.read("trades", as_of=as_of)
+
+print(f"by snapshot name: {int(by_name['rows'].iloc[0]):,} rows")
+print(f"by version {pinned}:     {by_version.num_rows:,} rows")
+print(f"by as_of {as_of}: {by_time.num_rows:,} rows")
+assert by_version.num_rows == by_time.num_rows == int(by_name["rows"].iloc[0])
+
+# %% [markdown]
+# ## 4. Diff two EOD cuts in one SQL statement
+#
+# Because snapshots are relations, "what changed between the 2nd and the 3rd"
+# is a join, not an ETL job — per symbol: rows added and where the last print
+# moved.
+
+# %%
+db.sql(
+    """
+    SELECT d3.symbol,
+           d3.n - d2.n                      AS trades_added,
+           d2.last_px                       AS close_jun02,
+           d3.last_px                       AS close_jun03,
+           round(d3.last_px / d2.last_px - 1, 4) AS px_chg
+    FROM (SELECT symbol, count(*) AS n, last_value(price ORDER BY ts) AS last_px
+          FROM h5i('trades', 'eod-2026-06-03') GROUP BY symbol) d3
+    JOIN (SELECT symbol, count(*) AS n, last_value(price ORDER BY ts) AS last_px
+          FROM h5i('trades', 'eod-2026-06-02') GROUP BY symbol) d2
+    USING (symbol)
+    ORDER BY symbol
+    """
+).to_pandas()
+
+# %% [markdown]
+# ## 5. Integrity attestation
+#
+# `verify(deep=True)` re-reads every manifest and segment and checks the
+# checksum chain — head to genesis. Combined with the manifest checksums
+# recorded in `snapshot_log`, this is an attestation you can hand over:
+# the EOD cut named in the log resolves to a manifest whose checksum matches,
+# and every byte under it verifies.
+
+# %%
+report = db.verify("trades", deep=True)
+report
+
+# %%
+assert not report["problems"], f"integrity check failed: {report['problems']}"
+print(f"checked {report['manifests_checked']} manifests, "
+      f"{report['segments_checked']} segments, "
+      f"{report['bytes_checked']:,} bytes — no problems")
+
+# %% [markdown]
+# ## 6. Retention: vacuum respects history and snapshots
+#
+# `vacuum` reclaims storage that nothing references. Here every segment is
+# still reachable — through the version chain and through the three EOD
+# snapshots — so even an aggressive `grace_seconds=0` run deletes nothing,
+# and the oldest EOD cut remains readable afterwards. Snapshots are the
+# retention policy: pin what you must keep, vacuum the rest.
+
+# %%
+print("dry run:", db.vacuum(apply=False))
+print("applied:", db.vacuum(grace_seconds=0, apply=True))
+print("oldest EOD cut still readable:",
+      f"{len(db.read('trades', snapshot='eod-2026-06-01')):,} rows")
+
+# %% [markdown]
+# ## Takeaways
+#
+# - An EOD cut is `db.snapshot(name, tables=[...], note=...)`: O(1), no data
+#   copied, addressable from SQL forever as `h5i('table', 'name')`.
+# - "As known on date X" has three equivalent spellings — snapshot name,
+#   version number, `as_of` commit time — and all resolve without replay.
+# - The Python API doesn't list snapshots yet (the CLI does); an append-only
+#   `snapshot_log` table closes the gap and gives you a *queryable, versioned*
+#   catalog with the pinned sequence and manifest checksum per cut.
+# - `verify(deep=True)` plus logged checksums turns "trust us" into an
+#   attestation; `vacuum` cannot touch anything a snapshot still pins.
+
+# %%
+db.close()
