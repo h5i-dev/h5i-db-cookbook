@@ -25,9 +25,6 @@ Real-data recipes download from Yahoo Finance on first run and cache to
 need tick-level data use realistic synthetic generators (`cookbook_utils/`) -
 deterministic given a seed.
 
-> **WSL2 note:** keep databases on ext4 (your home dir), not `/mnt/c` -
-> h5i-db's crash-safety relies on POSIX rename/fsync semantics.
-
 ## Recipes
 
 ### 00 - Fundamentals
