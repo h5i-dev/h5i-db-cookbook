@@ -129,11 +129,10 @@ db.append(
 # Our study rebalances monthly, so the research panel is the month-end cross
 # section — one `time_bucket('1mo', ...)` rollup, materialized as its own
 # table. Deriving compact, purpose-built tables from the canonical daily
-# store is the usual shape of this workflow — and it also respects a
-# limitation of the current h5i-db build: ASOF joins evaluate on a single
-# Arrow batch (8,192 rows) per side and *silently truncate* beyond it. Keep
-# both join sides comfortably below that (here: ~990 month-ends x ~300
-# reports) and always assert one output row per left row, as we do below.
+# store is the usual shape of this workflow: the join runs on ~990
+# month-ends x ~300 reports instead of the full daily panel. Whatever the
+# sizes, assert one output row per left row after any ASOF join, as we do
+# below — it turns silent join mistakes into loud ones.
 
 # %%
 monthly = db.sql(

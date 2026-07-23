@@ -87,16 +87,15 @@ print(f"{len(fx):,} ticks over 24h ({n:,} per pair, ~{n / 86_400:.1f}/sec)")
 #
 # The classic approach: resample both series to a fine common grid, compute
 # returns, correlate at every lead/lag offset. h5i-db's `time_bucket` takes
-# sub-second widths — spelled out as `'250milliseconds'`; beware that the
-# terse `'250ms'` parses as 250 *minutes* ("m" + plural "s") — so the grid
-# reduction happens in the database: one GROUP BY turns 960k ticks into
-# per-bucket closing mids, streaming on sorted storage. The pandas side just
-# forward-fills the grid and shifts.
+# sub-second widths (`'250ms'`), so the grid reduction happens in the
+# database: one GROUP BY turns 960k ticks into per-bucket closing mids,
+# streaming on sorted storage. The pandas side just forward-fills the grid
+# and shifts.
 
 # %%
 bucketed = db.sql(
     """
-    SELECT time_bucket('250milliseconds', ts) AS bucket, pair,
+    SELECT time_bucket('250ms', ts) AS bucket, pair,
            last_value((bid + ask) / 2 ORDER BY ts) AS mid
     FROM fx
     GROUP BY bucket, pair
@@ -147,11 +146,9 @@ print(f"CCF peak at k = {peak * 0.25:+.2f}s (corr {ccf.max():.2f}); corr at k=0:
 # willing to accept? We audit a 20-minute window, sweeping the tolerance and
 # tracking match rate and the correlation of aligned tick-to-tick returns.
 #
-# One operational note: the current build's `asof_join` only handles inputs
-# that fit in a single storage batch (~8k rows per side) — larger tables get
-# silently truncated. Windowed extracts are therefore not just good QA
-# hygiene here but a hard requirement, and we assert the join returned one
-# row per left tick and cross-check a sample against `pandas.merge_asof`.
+# Windowed extracts keep the audit fast and the numbers inspectable; we
+# assert the join returned one row per left tick and cross-check a sample
+# against `pandas.merge_asof` — standard hygiene for any ASOF pipeline.
 
 # %%
 w0 = int(pd.Timestamp("2026-06-01 12:00", tz="UTC").value // 1000)
@@ -336,10 +333,9 @@ for k, v in eq_ccf.items():
 #
 # ## Takeaways
 #
-# - `time_bucket` accepts sub-second widths (`'250milliseconds'` — spell
-#   units out: `'250ms'` means 250 *minutes*), so CCF grids come straight
-#   out of one GROUP BY; `last_value(... ORDER BY ts)` is the per-bucket
-#   closing mid.
+# - `time_bucket` accepts sub-second widths (`'250ms'`), so CCF grids come
+#   straight out of one GROUP BY; `last_value(... ORDER BY ts)` is the
+#   per-bucket closing mid.
 # - `asof_join(..., 'backward', tolerance)` aligns irregular series with an
 #   explicit staleness budget — unmatched ticks surface as NULLs you can
 #   count, which is how a match-rate/tolerance audit falls out for free.

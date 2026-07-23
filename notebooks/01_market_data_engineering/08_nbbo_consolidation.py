@@ -95,11 +95,9 @@ db.append("venue_quotes", pa.Table.from_pandas(venue_quotes, preserve_index=Fals
 # microseconds) declares a venue's quote stale — NULL — rather than letting a
 # dead book linger at the inside.
 #
-# One sizing note: the current h5i-db build evaluates ASOF joins on a single
-# Arrow batch (8,192 rows) per side and silently truncates beyond that, so we
-# deliberately keep both the grid (~7.0k rows) and the venue tape (~7.4k
-# rows) under that limit — and assert the join returned one row per grid
-# row, which any ASOF pipeline should do anyway.
+# One habit worth keeping in any ASOF pipeline: assert the join returned
+# exactly one row per grid row (a LEFT ASOF join is 1:1 with its left side),
+# so a sizing or key mistake fails loudly instead of skewing the book.
 
 # %%
 open_ts = venue_quotes["ts"].min().ceil("10s")

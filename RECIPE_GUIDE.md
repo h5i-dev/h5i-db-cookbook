@@ -89,8 +89,8 @@ db.append("trades", arrow_table, note="day 1 load")   # strict: schema match,
 #   {"table","sequence","op","rows_total","segments_total","segments_added",
 #    "segments_deduped","committed_at_ns"}
 db.append("trades", data, expected_version=3)  # optimistic lock -> ConflictError if head moved
-# (ConflictError.hint mentions `append_with_retry` — that helper does not exist
-#  in the Python API; write a small re-read-head-and-retry loop instead)
+# (plain append already auto-retries pure-append conflicts; on ConflictError
+#  with expected_version, re-read the head and retry against it)
 db.write("trades", arrow_table)    # replace contents -> new version (history kept)
 db.tables(); db.schema("trades")
 db.versions("trades")              # list of dicts: sequence (=version number), op
@@ -160,12 +160,9 @@ SELECT time_bucket('5m', ts) AS bar, symbol,
        min(price) AS low,  last_value(price ORDER BY ts) AS close,
        sum(size) AS volume, vwap(price, size) AS vwap
 FROM trades GROUP BY bar, symbol ORDER BY bar;
--- time_bucket widths: '1m','1h','1d','7d','1mo','1y'; optional 3rd arg:
--- origin timestamp or IANA tz ('America/New_York') for session-aligned days.
--- CAUTION: bare-seconds widths must be spelled '5sec'/'30sec' — '5s' fails in
--- this build ("unknown interval unit"), and '250ms' parses as 250 MINUTES
--- ('m' + plural 's') — use '250milliseconds' or '0.25sec'. Sub-minute
--- alternative: date_bin(INTERVAL '5 seconds', ts).
+-- time_bucket widths: '5s','250ms','1m','1h','1d','7d','1mo','1y' (plural
+-- spellings like '30 seconds' work too); optional 3rd arg: origin timestamp
+-- or IANA tz ('America/New_York') for session-aligned days.
 
 -- ASOF join (sort-free): for each left row, latest right row at/before it
 SELECT * FROM asof_join('trades', 'quotes', 'ts', 'ts', 'symbol');
@@ -175,15 +172,13 @@ SELECT * FROM asof_join('trades', 'quotes', 'ts', 'ts', 'symbol');
 --     ON trades.symbol = quotes.symbol
 -- (bare table names only — aliases are rejected by the planner)
 -- Unmatched left rows keep NULLs; colliding right columns get _right suffix.
---
--- *** KNOWN BUG in the current build (verified 2026-07): asof_join silently
--- truncates output to one Arrow batch (8,192 rows) per side and matches
--- surviving rows against only the right side's first batch — stale results
--- with NO error. Keep BOTH asof inputs <= 8,192 rows (pre-filter to a symbol
--- and time window, or join bar-level tables), and cross-check one row against
--- a point query. Recipes here are sized accordingly. ***
--- Also: by-columns need exact type equality (utf8 vs large_string errors —
--- .cast() pandas-built tables to explicit schemas).
+-- String-family by-keys coerce across encodings (utf8 / large_string /
+-- dictionary), so pandas-built tables join stored ones directly; other
+-- type mismatches still error.
+-- Hygiene worth keeping in any ASOF pipeline: assert len(output) ==
+-- len(left) (a LEFT ASOF join is 1:1 with its left side) and cross-check
+-- one row against a point query. (Builds before 2026-07-23 silently
+-- truncated joins beyond 8,192 rows per side — upgrade if you see that.)
 
 -- Regular grids for illiquid series: step is raw units (us!), fill mode:
 SELECT * FROM gapfill('bars_1m', 'ts', 60000000, 'locf');      -- also 'null','interpolate'

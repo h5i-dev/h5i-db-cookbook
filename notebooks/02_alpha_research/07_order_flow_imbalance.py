@@ -80,11 +80,9 @@ print({t: len(db.read(t)) for t in db.tables()})
 #
 # We run the audit on a midday 15-minute window, carved out with time-ranged
 # `db.read` calls (raw microsecond bounds, pruned at the segment level) and
-# stored as small workbench tables. Windowing is not just audit hygiene: the
-# current build's `asof_join` only handles inputs that fit in one storage
-# batch (~8k rows per side) and silently truncates beyond that. So we keep
-# both sides small, assert the join returns exactly one row per trade, and
-# cross-check the attached quotes against `pandas.merge_asof`.
+# stored as small workbench tables. A windowed audit is fast to iterate on
+# and easy to eyeball; we assert the join returns exactly one row per trade
+# and cross-check the attached quotes against `pandas.merge_asof`.
 
 # %%
 w0 = int(pd.Timestamp("2026-06-01 16:00", tz="UTC").value // 1000)
@@ -142,13 +140,12 @@ for rule in ("lr_sign", "tick_sign"):
 #
 # ## 3. Sign the full tape
 #
-# The audited quote rule needs the trade-quote ASOF at full scale, which the
-# current build's batch limit rules out — production answer: loop the join
-# over windows like the one above. For this recipe the tick test (a pure
-# `lag()` window over `trades`, no alignment needed) is accurate enough to
-# carry the OFI study, and we keep the generator's true side as an oracle
-# upper bound. The signed tape is persisted as a first-class table: signing
-# is expensive enough that you want it done once, committed, and versioned.
+# The audited quote rule would need the trade-quote ASOF at full scale.
+# For this recipe the tick test (a pure `lag()` window over `trades`, no
+# alignment needed) is accurate enough to carry the OFI study, and we keep
+# the generator's true side as an oracle upper bound. The signed tape is
+# persisted as a first-class table: signing is expensive enough that you
+# want it done once, committed, and versioned.
 
 # %%
 signed = db.sql(

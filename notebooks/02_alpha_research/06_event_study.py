@@ -163,12 +163,12 @@ db.tables()
 # And because `asof_join(...)` is just a relation, we can equi-join its
 # output straight back to `prices` for the day-0 close, all in one statement.
 #
-# One operational note: the current build's `asof_join` only handles inputs
-# that fit in a single storage batch (~8k rows per side) — larger tables get
-# silently truncated. Joining the 100-row events table against the 650-row
-# calendar (rather than the 65k-row price panel) keeps us comfortably inside
-# that envelope; we assert one output row per event and cross-check the
-# session mapping against a numpy `searchsorted` on the calendar.
+# One operational note: joining the 100-row events table against the 650-row
+# calendar (rather than the 65k-row price panel) keeps the join tiny — derive
+# compact, purpose-built tables and join those. We assert one output row per
+# event and cross-check the session mapping against a numpy `searchsorted`
+# on the calendar; cheap asserts like these turn alignment mistakes into
+# loud failures instead of quietly shifted event windows.
 
 # %%
 aligned = db.sql(

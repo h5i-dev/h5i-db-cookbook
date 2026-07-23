@@ -148,10 +148,11 @@ def book_ts(v):
     """Timestamp of the latest book inside version v of `holdings`."""
     return db.sql(f"SELECT max(ts) AS m FROM h5i('holdings', {v})").to_pandas()["m"][0]
 
-# Resolve each version's book timestamp first and inline it as a literal:
-# the current build mis-plans joins whose inputs both carry scalar
-# subqueries, silently matching nothing — two steps keep the diff correct.
-# px_now marks every leg (including exits) at the rebalance-date close.
+# Resolve each version's book timestamp once and inline it as a literal —
+# the resolved read point then appears verbatim in the SQL, which is what
+# you want in an audit artifact (and it saves re-running the subquery in
+# every relation). px_now marks every leg (including exits) at the
+# rebalance-date close.
 def book_diff_sql(v_new, v_old, select):
     return f"""
     WITH cur AS (SELECT symbol, shares, price FROM h5i('holdings', {v_new})
