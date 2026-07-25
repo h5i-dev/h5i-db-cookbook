@@ -131,6 +131,23 @@ plan.discard(); db.list_plans("trades")
 db.policy()                        # {"direct_append","direct_write","direct_replace",
                                    #  "direct_delete","direct_restore","direct_compact"} (bools)
 db.set_policy(direct_delete=False) # gated ops then require the plan/apply flow
+# Look-ahead diagnostics: run one query at head AND at a decision read point,
+# and report the delta - the share of a result that was not knowable then.
+rep = db.leakage_check(sql, version=1)          # or as_of="..." / snapshot="..."
+rep["leakage_detected"]; rep["max_abs_delta"]; rep["withheld_versions"]
+rep["columns"][0]                               # {"name","head","asof","delta","delta_pct",...}
+#   (head/asof/delta/delta_pct are present only when both results are 1 row)
+rep["vacuous"]      # True => both read points resolved to the SAME version, so
+                    # the delta is arithmetically zero and means nothing. The
+                    # normal state of a single-bulk-ingest database. CHECK THIS
+                    # BEFORE READING THE NUMBER.
+rep["notes"]        # caveats to surface alongside the numbers
+# Scope: this measures the ARRIVAL axis (late/restated rows across commits). It
+# is blind to event-time look-ahead inside one snapshot (a same-bar signal, a
+# window overrunning forward) - those show a near-zero delta. The structural
+# fix for that axis is CLI-only today: `h5i-db query ... --decision-time <ts>
+# [--embargo <dur>]` bounds every scan in the session.
+
 db.snapshot("eod-2026-07-21", tables=["trades"], note="EOD risk cut")
 # (create-only: there is no list-snapshots call in the Python API)
 db.compact("trades")               # merge small segments (do this after many small appends)
