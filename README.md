@@ -3,6 +3,8 @@
 Practical, quant-focused recipes for [h5i-db](https://github.com/h5i-dev/h5i-db),
 the embedded, versioned time-series database for market data workloads.
 
+日本語版は [`notebooks_ja/`](notebooks_ja/README.md) にあります（コードは同一、解説のみ翻訳）.
+
 ## Setup
 
 ```bash
@@ -89,6 +91,7 @@ deterministic given a seed.
 ```
 cookbook_utils/     shared synthetic-data generators + cached Yahoo downloader
 notebooks/          37 recipes × (.py source ⇄ executed .ipynb)
+notebooks_ja/       the same 37 recipes, prose translated to Japanese
 scripts/            build tooling (py → executed ipynb)
 data/cache/         cached real market data (parquet)
 data/dbs/           databases created by recipes (disposable)
@@ -97,9 +100,13 @@ data/dbs/           databases created by recipes (disposable)
 ## Rebuilding the notebooks
 
 ```bash
-python scripts/build_notebooks.py            # all recipes
+python scripts/build_notebooks.py                         # all recipes
 python scripts/build_notebooks.py 00_fundamentals/01_quickstart
+python scripts/build_notebooks.py --dir notebooks_ja      # Japanese recipes
 ```
+
+Both trees run the same code against the same `data/dbs/` directories, so build
+one at a time.
 
 ## License
 
