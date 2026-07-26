@@ -1,6 +1,6 @@
 # h5i-db-cookbook
 
-Practical, quant-focused recipes for [h5i-db](https://github.com/h5i-dev/h5i-db) -
+Practical, quant-focused recipes for [h5i-db](https://github.com/h5i-dev/h5i-db),
 the embedded, versioned time-series database for market data workloads.
 
 ## Setup
@@ -22,7 +22,7 @@ python notebooks/00_fundamentals/01_quickstart.py
 
 Real-data recipes download from Yahoo Finance on first run and cache to
 `data/cache/`, so everything is reproducible offline afterwards. Recipes that
-need tick-level data use realistic synthetic generators (`cookbook_utils/`) -
+need tick-level data use realistic synthetic generators (`cookbook_utils/`),
 deterministic given a seed.
 
 ## Recipes
@@ -31,14 +31,14 @@ deterministic given a seed.
 
 | Recipe | What you learn |
 |---|---|
-| [01 Quickstart](notebooks/00_fundamentals/01_quickstart.ipynb) | Create a DB, ingest ticks, first SQL, first time travel - in 5 minutes |
+| [01 Quickstart](notebooks/00_fundamentals/01_quickstart.ipynb) | Create a DB, ingest ticks, first SQL, first time travel, in 5 minutes |
 | [02 Designing market-data schemas](notebooks/00_fundamentals/02_designing_market_data_schemas.ipynb) | Trades/quotes/bars schemas, time columns, sort keys, Arrow types |
 | [03 Ingestion patterns](notebooks/00_fundamentals/03_ingestion_patterns.ipynb) | Parquet/CSV/pandas/polars in; append vs write; batching; conflict handling |
 | [04 SQL tour for quants](notebooks/00_fundamentals/04_sql_tour_for_quants.ipynb) | DataFusion SQL: windows, CTEs, `time_bucket`, `vwap`, `ewma`, rolling sugar |
 | [05 Time travel & versioning](notebooks/00_fundamentals/05_time_travel_and_versioning.ipynb) | `h5i('t', v)`, as-of reads, `versions()`, `restore`, snapshots |
 | [06 Previewable mutations](notebooks/00_fundamentals/06_previewable_mutations.ipynb) | plan → inspect → apply/discard; mutation policy gates |
 | [07 Streaming appends & tail](notebooks/00_fundamentals/07_streaming_appends_and_tail.ipynb) | Live feed simulation; append-only tails; incremental consumers |
-| [08 Maintenance](notebooks/00_fundamentals/08_maintenance.ipynb) | snapshot, compact, vacuum, verify - keeping a store healthy |
+| [08 Maintenance](notebooks/00_fundamentals/08_maintenance.ipynb) | snapshot, compact, vacuum, verify: keeping a store healthy |
 
 ### 01 - Market data engineering
 
@@ -81,7 +81,7 @@ deterministic given a seed.
 | [07 Options & IV surfaces](notebooks/03_risk_and_production/07_options_iv_surface.ipynb) | Storing chains, surface snapshots, smile evolution |
 | [08 FX & crypto 24/7 data](notebooks/03_risk_and_production/08_fx_crypto_24_7.ipynb) | No sessions, no gaps: bucketing and rolling stats around the clock |
 | [09 Fixed-income curves](notebooks/03_risk_and_production/09_fixed_income_curves.ipynb) | Point-in-time yield curves, carry/rolldown, curve history |
-| [10 Performance tuning](notebooks/03_risk_and_production/10_performance_tuning.ipynb) | Pruning, compaction, resource limits, batching - and why it's fast |
+| [10 Performance tuning](notebooks/03_risk_and_production/10_performance_tuning.ipynb) | Pruning, compaction, resource limits, batching, and why it's fast |
 | [11 Leakage check](notebooks/03_risk_and_production/11_leakage_check.ipynb) | Pricing hindsight: `leakage_check` across a sweep, and the two ways it misleads |
 
 ## Layout
@@ -101,6 +101,6 @@ python scripts/build_notebooks.py            # all recipes
 python scripts/build_notebooks.py 00_fundamentals/01_quickstart
 ```
 
-## License 
+## License
 
 Apache-2.0
