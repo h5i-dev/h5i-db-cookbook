@@ -133,8 +133,8 @@ db.policy()                        # {"direct_append","direct_write","direct_rep
 db.set_policy(direct_delete=False) # gated ops then require the plan/apply flow
 # Look-ahead diagnostics: run one query at head AND at a decision read point,
 # and report the delta - the share of a result that was not knowable then.
-rep = db.leakage_check(sql, version=1)          # or as_of="..." / snapshot="..."
-rep["leakage_detected"]; rep["max_abs_delta"]; rep["withheld_versions"]
+rep = db.arrival_delta(sql, version=1)          # or as_of="..." / snapshot="..."
+rep["changed"]; rep["max_abs_delta"]; rep["withheld_versions"]
 rep["columns"][0]                               # {"name","head","asof","delta","delta_pct",...}
 #   (head/asof/delta/delta_pct are present only when both results are 1 row)
 rep["vacuous"]      # True => both read points resolved to the SAME version, so

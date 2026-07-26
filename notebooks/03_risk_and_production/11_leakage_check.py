@@ -1,5 +1,5 @@
 # %% [markdown]
-# # leakage-check: which of last night's backtests actually held up?
+# # Leakage checks: which of last night's backtests actually held up?
 #
 # A research agent - or a parameter sweep, or a junior with a for-loop - runs
 # forty backtests overnight. In the morning there are forty Sharpes. Reviewing
@@ -8,7 +8,7 @@
 # the list gets promoted and the rest get deleted. That is exactly the selection
 # procedure that promotes leaks.
 #
-# `leakage_check` turns that review into a number. It runs one query twice -
+# `arrival_delta` turns that review into a number. It runs one query twice -
 # against the current head, and against a decision read point - and reports the
 # delta. The part of a metric that moves is the part that depended on data which
 # had not arrived when the trade would have been placed: the alpha that
@@ -100,7 +100,7 @@ for v in db.versions("prices"):
 # %% [markdown]
 # ## 3. The metric, written once, as a single query
 #
-# `leakage_check` re-runs a *query*, so the whole strategy has to be expressible
+# `arrival_delta` re-runs a *query*, so the whole strategy has to be expressible
 # as one. That constraint is a feature: a metric you can hand to the database is
 # a metric you can hand to any read point, including a past one.
 #
@@ -151,9 +151,9 @@ print("head Sharpe:", round(head_sharpe, 3))
 # done, before any correction had arrived. Everything after it is hindsight.
 
 # %%
-report = db.leakage_check(SHARPE_SQL, version=1)
+report = db.arrival_delta(SHARPE_SQL, version=1)
 
-print(f"leakage_detected : {report['leakage_detected']}")
+print(f"changed          : {report['changed']}")
 print(f"vacuous          : {report['vacuous']}")
 col = report["columns"][0]
 print(f"head             : {col['head']:.3f}   (what the backtest reported)")
@@ -200,7 +200,7 @@ VARIANTS = {f"mom_{n}d": with_lookback(n) for n in (22, 66, 5)}
 
 rows = []
 for name, sql in VARIANTS.items():
-    rep = db.leakage_check(sql, version=1)
+    rep = db.arrival_delta(sql, version=1)
     c = rep["columns"][0]
     rows.append(
         {
@@ -234,7 +234,7 @@ if promoted.empty:
 # ## 6. Failure mode 1: a zero that means nothing
 #
 # Here is the part that decides whether this diagnostic helps you or lulls you.
-# `leakage_check` compares two read points. If both resolve to the same version
+# `arrival_delta` compares two read points. If both resolve to the same version
 # - which is the case for any database loaded in a single bulk ingest, the
 # normal cold start - then it compares identical data and the delta is *forced*
 # to zero. It has measured nothing, and a zero that means nothing looks exactly
@@ -247,8 +247,8 @@ bulk = h5i_db.Database(cu.fresh_db("prod_leakage_bulk"), create=True)
 bulk.create_table("prices", schema, time_column="ts", sort_key=["ts", "symbol"])
 bulk.append("prices", first_publication, note="ten years, one commit")
 
-bulk_report = bulk.leakage_check(SHARPE_SQL, version=1)
-print(f"leakage_detected : {bulk_report['leakage_detected']}   <- looks clean")
+bulk_report = bulk.arrival_delta(SHARPE_SQL, version=1)
+print(f"changed          : {bulk_report['changed']}   <- looks clean")
 print(f"vacuous          : {bulk_report['vacuous']}   <- but it checked nothing")
 print(f"withheld commits : {len(bulk_report['withheld_versions'])}")
 print()
@@ -258,7 +258,7 @@ bulk.close()
 # %% [markdown]
 # ## 7. Failure mode 2: the leak it cannot see
 #
-# `leakage_check` measures the *arrival* axis: rows that exist now but had not
+# `arrival_delta` measures the *arrival* axis: rows that exist now but had not
 # been published yet. It is blind to the other axis - rows that were always in
 # the table, read at a moment you should not have been reading them.
 #
@@ -271,7 +271,7 @@ bulk.close()
 LEAKY_SQL = SHARPE_SQL.replace("prev / prev22 - 1.0  AS mom", "close / prev22 - 1.0 AS mom")
 assert LEAKY_SQL != SHARPE_SQL, "the leaky-signal substitution did not apply"
 
-leaky_report = db.leakage_check(LEAKY_SQL, version=1)
+leaky_report = db.arrival_delta(LEAKY_SQL, version=1)
 lc = leaky_report["columns"][0]
 inflation = lc["head"] - col["head"]
 print(f"leaky Sharpe     : {lc['head']:.2f}  (honest signal: {col['head']:.2f})")
@@ -323,14 +323,14 @@ print(f"future rows hidden: {total - visible:,}")
 #   --embargo 1d
 # ```
 #
-# Use both: the cutoff to stop event-time leaks happening, `leakage_check` to
+# Use both: the cutoff to stop event-time leaks happening, `arrival_delta` to
 # measure the arrival leaks that no cutoff can prevent, because they are caused
 # by the world learning something after you did.
 
 # %% [markdown]
 # ## Takeaways
 #
-# - **`leakage_check` prices hindsight.** One query, two read points; the delta
+# - **`arrival_delta` prices hindsight.** One query, two read points; the delta
 #   is how much of a result was not knowable at decision time. Read it in the
 #   metric's own units and rank a sweep by it rather than by Sharpe -
 #   `delta_pct` explodes on any metric whose base sits near zero, which a
@@ -346,7 +346,7 @@ print(f"future rows hidden: {total - visible:,}")
 #   moved every variant here by more than 0.4 Sharpe. Corporate actions are not
 #   a rounding error in the arrival history; they are usually the whole story.
 # - **The two tools are complementary, not alternatives.** `--decision-time`
-#   prevents event-time leaks structurally; `leakage_check` measures arrival
+#   prevents event-time leaks structurally; `arrival_delta` measures arrival
 #   leaks, which are caused by the data changing and so cannot be prevented at
 #   all - only quantified.
 # - **h5i-db features doing the work:** immutable per-commit versioning (the
