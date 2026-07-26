@@ -82,12 +82,13 @@ deterministic given a seed.
 | [08 FX & crypto 24/7 data](notebooks/03_risk_and_production/08_fx_crypto_24_7.ipynb) | No sessions, no gaps: bucketing and rolling stats around the clock |
 | [09 Fixed-income curves](notebooks/03_risk_and_production/09_fixed_income_curves.ipynb) | Point-in-time yield curves, carry/rolldown, curve history |
 | [10 Performance tuning](notebooks/03_risk_and_production/10_performance_tuning.ipynb) | Pruning, compaction, resource limits, batching - and why it's fast |
+| [11 Leakage check](notebooks/03_risk_and_production/11_leakage_check.ipynb) | Pricing hindsight: `leakage_check` across a sweep, and the two ways it misleads |
 
 ## Layout
 
 ```
 cookbook_utils/     shared synthetic-data generators + cached Yahoo downloader
-notebooks/          36 recipes × (.py source ⇄ executed .ipynb)
+notebooks/          37 recipes × (.py source ⇄ executed .ipynb)
 scripts/            build tooling (py → executed ipynb)
 data/cache/         cached real market data (parquet)
 data/dbs/           databases created by recipes (disposable)
