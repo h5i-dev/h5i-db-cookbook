@@ -1,18 +1,21 @@
 # %% [markdown]
 # # Quickstart: your first h5i-db market database
 #
-# h5i-db is an embedded, versioned time-series database built for quant
-# workloads: every write is an atomic commit producing an immutable version,
-# and the SQL layer (Apache DataFusion) ships native time-series operators -
-# `time_bucket`, `vwap`, `ewma`, ASOF joins, gapfill. There is no server to
-# run: the database is a directory, like SQLite or DuckDB.
+# h5i-db is an embedded, versioned time-series database for quant workloads.
+# There is no server to run. A database is a directory on disk, like SQLite or
+# DuckDB.
 #
-# In five minutes we will:
+# Two things separate it from a generic embedded store. Every write is an atomic
+# commit that produces an immutable, still-queryable version. And the SQL layer
+# (Apache DataFusion) ships the time-series operators a desk actually needs:
+# `time_bucket`, `vwap`, `ewma`, ASOF joins, gapfill.
 #
-# 1. create a database and a `trades` table,
-# 2. ingest a few days of tick data,
+# In five minutes we:
+#
+# 1. look at the tick data we are going to load,
+# 2. create a database and ingest it,
 # 3. compute minute bars with VWAP in one query,
-# 4. travel back in time to a previous version of the table.
+# 4. read the table as it was before the last load.
 
 # %%
 import h5i_db
@@ -24,13 +27,35 @@ import cookbook_utils as cu
 print("h5i-db version:", h5i_db.__version__)
 
 # %% [markdown]
-# ## 1. Create a database and a table
+# ## 1. The data
 #
-# A `Database` is a directory on disk. Tables are declared with an Arrow
-# schema plus a `time_column` - h5i-db stores segments sorted by that column
-# and uses it for pruning, ASOF joins and bar rollups. The `sort_key` adds a
-# secondary sort (symbol within each timestamp); it must start with the time
-# column.
+# Recipes in this cookbook get their market data from `cookbook_utils`, a set of
+# synthetic generators that are deterministic given a seed. `cu.make_trades`
+# returns a tick tape: one row per trade, three symbols, three NYSE sessions.
+# Arrival times are U-shaped across the session and prices bounce between bid
+# and ask, so the tape behaves like the real thing.
+#
+# | column | type | meaning |
+# | --- | --- | --- |
+# | `ts` | `timestamp[us, tz=UTC]` | trade timestamp, ascending |
+# | `symbol` | `string` | ticker |
+# | `price` | `float64` | trade price |
+# | `size` | `int64` | shares traded |
+# | `exchange` | `string` | reporting venue |
+# | `side` | `string` | `B` buyer-initiated, `S` seller-initiated |
+
+# %%
+trades = cu.make_trades(symbols=["AAPL", "MSFT", "NVDA"], days=3, trades_per_day=20_000)
+print(f"{trades.num_rows:,} rows x {trades.num_columns} columns")
+trades.to_pandas().head()
+
+# %% [markdown]
+# ## 2. Create a database and load it
+#
+# A table is an Arrow schema plus a `time_column`. h5i-db keeps segments sorted
+# by that column and uses it for pruning, ASOF joins and bar rollups. The
+# `sort_key` adds a secondary sort within each timestamp. It must start with the
+# time column.
 
 # %%
 db = h5i_db.Database(cu.fresh_db("00_quickstart"), create=True)
@@ -49,28 +74,34 @@ db.create_table("trades", schema, time_column="ts", sort_key=["ts", "symbol"])
 db.tables()
 
 # %% [markdown]
-# ## 2. Ingest tick data
+# `append` takes any pyarrow Table or RecordBatch, and it is strict. The batch
+# must match the schema, be sorted by time, and start at or after the table's
+# current maximum timestamp. Those are feed semantics, not upsert semantics.
 #
-# `append` takes any pyarrow Table / RecordBatch. It is *strict*: data must be
-# time-sorted and start at or after the table's current max timestamp - feed
-# semantics, not upsert semantics. Each call is one atomic commit that
-# produces a new immutable version.
+# Each call is one atomic commit. It returns a receipt: the new version number
+# and the row and segment totals after the commit.
 
 # %%
-trades = cu.make_trades(symbols=["AAPL", "MSFT", "NVDA"], days=3, trades_per_day=20_000)
 commit = db.append("trades", trades)
 commit
 
 # %% [markdown]
 # ## 3. Query it
 #
-# There are two surfaces on the same engine. `db.table(...)` starts a **lazy
-# query** you build with method calls - nothing runs until `.to_pandas()` -
-# and `db.sql(...)` takes a string. Both go through DataFusion with the same
-# finance-native operators: `time_bucket` for the bar grid,
-# `first_value/last_value(... ORDER BY ts)` for open and close by event time,
-# and `vwap` as a native aggregate. Because segments are stored time-sorted,
-# this streams instead of sorting.
+# There are two query surfaces on one engine. `db.table(...)` starts a **lazy
+# query** that you build with method calls; nothing runs until you collect it.
+# `db.sql(...)` takes a string instead. Both compile to the same DataFusion
+# plan.
+#
+# Minute bars need three of the finance-native operators:
+#
+# - `time_bucket('1m', ts)` floors each trade to its minute, giving the bar grid;
+# - `.first("ts")` and `.last("ts")` are `first_value`/`last_value` ordered by
+#   `ts`, so open and close come from event time rather than row order;
+# - `vwap(price, size)` is a native aggregate.
+#
+# Because segments are already stored sorted by `ts`, this query streams instead
+# of sorting.
 
 # %%
 bar_query = (
@@ -90,9 +121,10 @@ bars = bar_query.to_pandas()
 bars.head(8)
 
 # %% [markdown]
-# The builder is a compiler, not a second engine - `.sql()` shows exactly
-# what it handed to DataFusion, and that string works verbatim in `db.sql()`.
-# Recipe 09 covers the builder properly; the rest of this cookbook uses it by
+# The builder is a compiler, not a second engine. `.sql()` prints exactly what
+# it handed to DataFusion, and that string runs verbatim in `db.sql()`.
+#
+# Recipe 09 covers the builder properly. The rest of this cookbook uses it by
 # default and drops to SQL where a string reads better.
 
 # %%
@@ -113,8 +145,10 @@ fig.tight_layout()
 # %% [markdown]
 # ## 4. Versions and time travel
 #
-# Every commit is listed in `versions()`. Append another day of data, then
-# read the table *as it was before* - an O(1) operation, not a replay.
+# `versions()` lists every commit the table has ever taken. Append a fourth day,
+# and the three-day table does not go anywhere: it is still readable as version
+# 1. Opening an old version is O(1), because h5i-db reads an older manifest
+# rather than replaying anything.
 
 # %%
 day4 = cu.make_trades(symbols=["AAPL", "MSFT", "NVDA"], days=1, start="2026-06-04", seed=8)
@@ -132,10 +166,10 @@ latest = db.table("trades").select(count_star().alias("n")).to_pandas()["n"][0]
 print(f"version 1: {v1_rows:,} rows\nversion 2: {v2_rows:,} rows\nlatest:    {latest:,} rows")
 
 # %% [markdown]
-# Time travel works inside a query too, so an old version and the live table
-# can meet in one statement. Pass a read point to `db.table(...)` - it lowers
-# to the `h5i()` table function - and write the query once as a function of
-# the version:
+# Time travel also works inside a query, so an old version and the live table
+# can meet in one statement. Pass a read point to `db.table(...)` and it lowers
+# to the `h5i()` table function. Since the query is a Python value, write it once
+# as a function of the version and call it twice:
 
 # %%
 def per_symbol(version=None):
@@ -156,16 +190,16 @@ now.join(was, on="symbol").select(
 # %% [markdown]
 # ## Takeaways
 #
-# - A database is a directory; a table is an Arrow schema + a time column.
-#   No server, no daemon - `pip install`, `Database(path, create=True)`, done.
-# - `append` is an atomic commit with feed semantics (strictly ordered in
-#   time). Bad ingest? Every previous version is still there.
-# - One query gets you OHLCV + VWAP bars, streaming on sorted storage -
-#   built with `db.table(...)` verbs, or written as SQL; `.sql()` is the door
-#   between them (recipe 09).
-# - Time travel is first-class: `db.read(v)` in Python, `db.table(v)` in the
-#   builder, `h5i('table', v)` in SQL, all O(1). This becomes the backbone of
-#   reproducible research - see recipe 05.
+# - A database is a directory and a table is an Arrow schema plus a time column.
+#   No server, no daemon: `pip install`, `Database(path, create=True)`, done.
+# - `append` is an atomic commit with feed semantics, so batches must be
+#   strictly ordered in time. A bad ingest cannot damage what is already stored.
+# - OHLCV bars with VWAP are one aggregation, streaming over sorted storage.
+#   Build it with `db.table(...)` verbs or write it as SQL; `.sql()` is the door
+#   between the two (recipe 09).
+# - Time travel is first-class and O(1): `db.read(v)` in Python, `db.table(v)`
+#   in the builder, `h5i('table', v)` in SQL. It is the backbone of reproducible
+#   research, which recipe 05 picks up.
 
 # %%
 db.close()

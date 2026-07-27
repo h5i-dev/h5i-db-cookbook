@@ -26,6 +26,27 @@ Rules:
 - **Audience: professional quants.** Assume they know finance (don't explain
   what VWAP *is* beyond one line - show how to compute it well). Explain
   h5i-db concepts on first use in that recipe.
+- **Show the data before you query it.** Every primary input table gets a
+  markdown paragraph (what the generator returns, what one row is), a
+  `column | type | meaning` table, and a code cell that loads, reports size and
+  shows the head:
+
+  ```python
+  trades = cu.make_trades(symbols=["AAPL", "MSFT", "NVDA"], days=5, trades_per_day=30_000, seed=7)
+  print(f"{trades.num_rows:,} rows x {trades.num_columns} columns")
+  trades.to_pandas().head()
+  ```
+
+  Plain pyarrow/pandas, no helper - the reader should be able to copy it. Types
+  in the table match the `pa.field(...)` constructors (`timestamp[us, tz=UTC]`,
+  `string`, `float64`, `int64`). Put the preview *before* `create_table`, so the
+  schema reads as a response to data the reader has seen. Recipes that build
+  their input locally preview the constructed table. With several inputs, the
+  second may be prose + head if its shape is obvious.
+- **Prose register: documentation, not essay.** One idea per sentence, ~25 words
+  max. No clause stuffed between dashes - if it is worth setting off, give it
+  its own sentence or a colon. Lead with what the code does, then why it is
+  written that way. The Polars user guide is the reference register.
 - **Queries are builder-first**: `db.table(...)` + verbs, not a SQL string,
   wherever the builder expresses the query cleanly. See the DataFrame builder
   cheatsheet for what deliberately stays in `db.sql()`.
