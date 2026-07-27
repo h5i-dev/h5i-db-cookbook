@@ -1,12 +1,23 @@
 # %% [markdown]
 # # Cross-sectional momentum: an honest monthly backtest
 #
-# The classic 12-1 momentum factor, end to end on real prices: signal
-# computation as a SQL window query, monthly rebalance dates from
-# `time_bucket('1mo', ...)`, and - the part most backtest stacks get wrong -
-# a versioned, snapshotted signal table so that six months from now you can
-# reproduce *exactly* what this run saw. The strategy itself is deliberately
-# vanilla; the h5i-db-native workflow around it is the point.
+# The classic 12-1 momentum factor, end to end on real prices. Signal
+# computation is a SQL window query, monthly rebalance dates come from
+# `time_bucket('1mo', ...)`, and the signal table itself is versioned and
+# snapshotted.
+#
+# That last part is what most backtest stacks get wrong. Six months from now you
+# should be able to reproduce *exactly* what this run saw.
+#
+# The strategy is deliberately vanilla. The h5i-db-native workflow around it is
+# the point.
+#
+# In this recipe we:
+#
+# 1. load real daily prices into a versioned table,
+# 2. compute the 12-1 signal on a monthly rebalance grid in one statement,
+# 3. build the portfolio and report an honest, cost-charged P&L,
+# 4. snapshot prices and signals together as the reproducibility layer.
 
 # %%
 import numpy as np
@@ -20,17 +31,34 @@ import cookbook_utils as cu
 db = h5i_db.Database(cu.fresh_db("alpha_momentum"), create=True)
 
 # %% [markdown]
-# ## 1. Load real prices into a versioned table
+# ## 1. The data
 #
-# 30 large caps, daily, 2018–2026 (cached Yahoo Finance data). We store only
-# what the study needs - `ts, symbol, adj_close` - with `sort_key`
-# `["ts", "symbol"]` so per-symbol window scans stream in order. `append` is
-# strict about that sort key: the input must be ordered by `ts`, then
-# `symbol` within each timestamp.
+# `cu.fetch_daily` gives real daily bars for 30 large caps, 2018 to 2026, cached
+# from Yahoo Finance. One row per symbol per session.
+#
+# | column | type | meaning |
+# | --- | --- | --- |
+# | `ts` | `timestamp[us, tz=UTC]` | session date |
+# | `symbol` | `string` | ticker |
+# | `open`, `high`, `low`, `close` | `float64` | session prices |
+# | `adj_close` | `float64` | close adjusted for splits and dividends |
+# | `volume` | `int64` | shares traded |
 
 # %%
 daily = cu.fetch_daily(cu.SP500_EXAMPLES, start="2018-01-01", end="2026-07-01")
+print(f"{daily.num_rows:,} rows x {daily.num_columns} columns, "
+      f"{len(set(daily['symbol'].to_pylist()))} symbols")
+daily.to_pandas().head()
 
+# %% [markdown]
+# We store only what the study needs: `ts`, `symbol` and `adj_close`. The
+# `sort_key` of `["ts", "symbol"]` makes per-symbol window scans stream in
+# order.
+#
+# `append` is strict about that sort key. The input must be ordered by `ts`,
+# then by `symbol` within each timestamp.
+
+# %%
 schema = pa.schema(
     [
         pa.field("ts", pa.timestamp("us", tz="UTC"), nullable=False),
@@ -51,12 +79,13 @@ print(f"version {commit['sequence']}: {commit['rows_total']:,} rows")
 # %% [markdown]
 # ## 2. The signal, in one SQL statement
 #
-# 12-1 momentum = return from 12 months ago to 1 month ago, skipping the most
-# recent month (short-term reversal). On a trading-day series that is
-# `lag(px, 21) / lag(px, 252) - 1` per symbol. The rebalance grid comes from
-# `time_bucket('1mo', ts)`: the last trading day of each calendar month.
-# Joining the two gives the month-end signal panel - no pandas resampling, no
-# calendar edge cases.
+# 12-1 momentum is the return from 12 months ago to 1 month ago, skipping the
+# most recent month to avoid short-term reversal. On a trading-day series that
+# is `lag(px, 21) / lag(px, 252) - 1` per symbol.
+#
+# The rebalance grid comes from `time_bucket('1mo', ts)`: the last trading day
+# of each calendar month. Joining the two gives the month-end signal panel, with
+# no pandas resampling and no calendar edge cases.
 
 # %%
 def lag_px(n: int):
@@ -89,16 +118,17 @@ panel.tail(4)
 # %% [markdown]
 # ## 3. Portfolio construction and an honest P&L
 #
-# With only 30 names a "decile" is 3 stocks, so we long the top 10 and short
-# the bottom 10, equal weight - closer to terciles, and less noisy. Discipline
-# checklist:
+# With only 30 names a "decile" is 3 stocks, so we long the top 10 and short the
+# bottom 10, equal weight. That is closer to terciles, and less noisy.
 #
-# - **No lookahead**: the signal observed at month-end *t* earns the return
-#   from *t* to *t+1*. The last month has no forward return and is dropped.
-# - **Costs**: 10 bps of one-way turnover, charged on every weight change
-#   (including the initial build).
-# - **Eligibility**: a name needs 252 days of history before it can be ranked;
-#   months with fewer than 25 rankable names are skipped.
+# The discipline checklist:
+#
+# - **No lookahead.** The signal observed at month-end *t* earns the return from
+#   *t* to *t+1*. The last month has no forward return and gets dropped.
+# - **Costs.** 10 bps of one-way turnover, charged on every weight change,
+#   including the initial build.
+# - **Eligibility.** A name needs 252 days of history before it can be ranked,
+#   and months with fewer than 25 rankable names are skipped.
 
 # %%
 mom = panel.pivot(index="ts", columns="symbol", values="momentum")
@@ -142,9 +172,9 @@ stats.round(3)
 # %% [markdown]
 # ## 4. Equity curves
 #
-# The long/short book is roughly market-neutral, so comparing it to a
-# long-only benchmark is about *shape*, not level: the benchmark rides the
-# 2018–2026 bull market while the momentum book mostly treads water.
+# The long/short book is roughly market-neutral, so comparing it to a long-only
+# benchmark is about *shape*, not level. The benchmark rides the 2018 to 2026
+# bull market while the momentum book mostly treads water.
 
 # %%
 import matplotlib.pyplot as plt
@@ -160,20 +190,24 @@ ax.legend()
 fig.tight_layout()
 
 # %% [markdown]
-# The momentum book lands near a **zero Sharpe** here. That is not a bug: 30
-# mega caps are a terrible momentum universe (the premium historically lives
-# in broader, smaller cross-sections), and 2020–2023 contained brutal momentum
-# crashes. Resist the urge to tweak lookbacks until the curve looks good -
-# that is how backtests die. Report it as it is.
+# The momentum book lands near a **zero Sharpe** here, and that is not a bug.
+# Thirty mega caps are a terrible momentum universe, since the premium
+# historically lives in broader, smaller cross-sections. On top of that, 2020 to
+# 2023 contained brutal momentum crashes.
+#
+# Resist the urge to tweak lookbacks until the curve looks good. That is how
+# backtests die. Report it as it is.
 
 # %% [markdown]
-# ## 5. Version the signal - the reproducibility layer
+# ## 5. Version the signal: the reproducibility layer
 #
 # The panel that produced these numbers goes back into h5i-db as a `signals`
-# table, and a **named snapshot** pins both `prices` and `signals` at this
-# exact state. Anyone can later query `h5i('signals', 'mom-run-001')` - or
-# re-read the prices the run saw - even after both tables move on. That is the
-# audit trail a research platform actually needs.
+# table, and a **named snapshot** pins both `prices` and `signals` at this exact
+# state.
+#
+# Anyone can later query `h5i('signals', 'mom-run-001')`, or re-read the prices
+# the run saw, even after both tables have moved on. That is the audit trail a
+# research platform actually needs.
 
 # %%
 sig_out = (
@@ -233,14 +267,14 @@ count_if = lambda flag: when(flag).then(lit(1)).otherwise(lit(0)).sum()
 # - `lag(...) OVER (PARTITION BY symbol ORDER BY ts)` plus
 #   `time_bucket('1mo', ts)` turns "compute 12-1 momentum on month-end dates"
 #   into one SQL statement that streams on sorted storage.
-# - Backtest hygiene is cheap: lag the signal one period, charge turnover,
-#   drop the unknowable last month. Do it every time.
-# - The result - near-zero Sharpe for large-cap momentum, ~70% monthly
-#   turnover eating 10 bps a side - is the honest one. A universe of 30 mega
+# - Backtest hygiene is cheap. Lag the signal one period, charge turnover, drop
+#   the unknowable last month. Do it every time.
+# - The result is the honest one: near-zero Sharpe for large-cap momentum, with
+#   roughly 70% monthly turnover eating 10 bps a side. A universe of 30 mega
 #   caps is a demo, not an alpha source.
 # - `db.snapshot("mom-run-001", ...)` pins prices *and* signals in one named,
-#   queryable state: `h5i('signals', 'mom-run-001')` reproduces this run
-#   forever, no CSV archaeology required.
+#   queryable state. `h5i('signals', 'mom-run-001')` reproduces this run forever,
+#   with no CSV archaeology required.
 
 # %%
 db.close()

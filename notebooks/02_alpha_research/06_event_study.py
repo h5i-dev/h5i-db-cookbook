@@ -1,23 +1,23 @@
 # %% [markdown]
 # # Event studies: CARs with ASOF-aligned announcement dates
 #
-# The classic event-study pipeline - market-model abnormal returns, cumulative
-# abnormal returns (CAR) around announcements - has one perennially fiddly
-# step: announcements do not land on trading days. Earnings drop on Saturday,
-# M&A leaks on a holiday, and every study needs "the first trading session at
-# or after the announcement". That is exactly an ASOF join with `'forward'`
-# direction, and h5i-db does it in one SQL call, per symbol, with a staleness
-# tolerance.
+# The classic event-study pipeline computes market-model abnormal returns and
+# cumulative abnormal returns around announcements. One step is perennially
+# fiddly: announcements do not land on trading days.
 #
-# Plan:
+# Earnings drop on Saturday, M&A leaks on a holiday, and every study needs "the
+# first trading session at or after the announcement". That is exactly an ASOF
+# join with `'forward'` direction, which h5i-db does in one SQL call, per
+# symbol, with a staleness tolerance.
 #
-# 1. build a 100-name daily panel and inject a *known* announcement-day shock
-#    (+2% day-0, then a 10-day drift) into a treated half of 100 events -
-#    so the study has a ground truth to recover,
-# 2. store `prices` and `events` tables, align events to trading sessions with
-#    `asof_join(..., 'forward', tolerance)`,
-# 3. estimate market-model betas, compute CAR[-10,+10] treated vs control
-#    with confidence bands.
+# In this recipe we:
+#
+# 1. build a 100-name daily panel and inject a *known* announcement shock into a
+#    treated half of 100 events, so the study has a ground truth to recover,
+# 2. store `prices`, `events` and the trading calendar as tables,
+# 3. align events to sessions with `asof_join(..., 'forward', tolerance)`,
+# 4. estimate market-model betas and compute CAR[-10,+10], treated against
+#    control, with confidence bands.
 
 # %%
 import numpy as np
@@ -31,16 +31,18 @@ import cookbook_utils as cu
 db = h5i_db.Database(cu.fresh_db("alpha_events"), create=True)
 
 # %% [markdown]
-# ## 1. Synthesize a panel with a known effect
+# ## 1. The data
 #
-# `make_daily_prices` gives a factor-driven panel (common market factor +
-# idiosyncratic noise) with no events in it. We add them ourselves, in pandas,
-# *before* storing: 100 events, one per symbol, at random calendar timestamps -
-# including weekends, deliberately. For the treated half we scale the
-# price path from the effective session onward: a +2% level shift on day 0
-# and a +0.15%/day drift over the next 10 sessions (a caricature of
-# post-announcement drift). Controls get nothing, so their CAR should be
-# flat at zero - a built-in placebo check.
+# `cu.make_daily_prices` gives a factor-driven panel, a common market factor
+# plus idiosyncratic noise, with no events in it. One row per symbol per
+# session.
+#
+# | column | type | meaning |
+# | --- | --- | --- |
+# | `ts` | `timestamp[us, tz=UTC]` | session close, 20:00 UTC |
+# | `symbol` | `string` | ticker, `STK000` … `STK099` |
+# | `open`, `high`, `low`, `close` | `float64` | session prices |
+# | `volume` | `int64` | shares traded |
 
 # %%
 N_SYMBOLS, N_DAYS, N_EVENTS = 100, 650, 100
@@ -48,7 +50,22 @@ DAY0_SHOCK, DRIFT_PER_DAY, DRIFT_DAYS = 0.02, 0.0015, 10
 
 symbols = [f"STK{i:03d}" for i in range(N_SYMBOLS)]
 prices = cu.make_daily_prices(symbols=symbols, days=N_DAYS).to_pandas()
+print(f"{len(prices):,} rows x {prices.shape[1]} columns, {N_SYMBOLS} symbols")
+prices.head()
 
+# %% [markdown]
+# We add the events ourselves, in pandas, *before* storing. There are 100
+# events, one per symbol, at random calendar timestamps, deliberately including
+# weekends.
+#
+# For the treated half we scale the price path from the effective session
+# onward: a +2% level shift on day 0 and a +0.15% per day drift over the next 10
+# sessions, a caricature of post-announcement drift.
+#
+# Controls get nothing, so their CAR should be flat at zero. That is a built-in
+# placebo check.
+
+# %%
 sess_us = np.sort(prices["ts"].astype("int64").unique())  # session closes, epoch us
 rng = np.random.default_rng(7)
 
@@ -75,14 +92,16 @@ print(f"{treated.sum()} treated / {(~treated).sum()} control events")
 print("weekend announcements:", (pd.to_datetime(ann_us, unit="us", utc=True).dayofweek >= 5).sum())
 
 # %% [markdown]
-# ## 2. Store `prices`, `events` - and the trading calendar itself
+# ## 2. Store `prices`, `events`, and the trading calendar itself
 #
-# All three are h5i-db tables with `ts` as the time column. The events table
-# carries the *raw announcement timestamp*, not a trading day - resolving
-# that mapping is the database's job, not the ingest script's. The third
-# table, `sessions`, is the trading calendar: one row per session close,
-# derived from the panel we actually have (so holidays are whatever the data
-# says they are). Materializing the calendar as data is what lets the
+# All three are h5i-db tables with `ts` as the time column.
+#
+# The events table carries the *raw announcement timestamp*, not a trading day.
+# Resolving that mapping is the database's job, not the ingest script's.
+#
+# The third table, `sessions`, is the trading calendar: one row per session
+# close, derived from the panel we actually have, so holidays are whatever the
+# data says they are. Materializing the calendar as data is what lets the
 # alignment be a join instead of `BusinessDay` arithmetic.
 
 # %%
@@ -154,22 +173,27 @@ db.tables()
 # ## 3. Align announcements to trading sessions with a forward ASOF join
 #
 # `asof_join(left, right, lts, rts, key, 'forward', tolerance)` matches each
-# event to the *first* session at or after the announcement, keyed here on
-# the calendar id (one calendar in this study; a global book would carry
-# several). The tolerance is in raw time units - microseconds, matching the
-# `timestamp[us, UTC]` column -
-# and 7 days is a generous cap that surfaces calendar problems as NULLs
-# instead of silently matching weeks later. The right table's colliding `ts`
-# comes back as `ts_right`: announcement and effective session side by side.
-# And because `asof_join(...)` is just a relation, we can equi-join its
-# output straight back to `prices` for the day-0 close, all in one statement.
+# event to the *first* session at or after the announcement. The key here is the
+# calendar id: one calendar in this study, though a global book would carry
+# several.
 #
-# One operational note: joining the 100-row events table against the 650-row
-# calendar (rather than the 65k-row price panel) keeps the join tiny - derive
-# compact, purpose-built tables and join those. We assert one output row per
-# event and cross-check the session mapping against a numpy `searchsorted`
-# on the calendar; cheap asserts like these turn alignment mistakes into
-# loud failures instead of quietly shifted event windows.
+# The tolerance is in raw time units, microseconds, matching the
+# `timestamp[us, UTC]` column. Seven days is a generous cap that surfaces
+# calendar problems as NULLs instead of silently matching weeks later.
+#
+# The right table's colliding `ts` comes back as `ts_right`, putting
+# announcement and effective session side by side. And because `asof_join(...)`
+# is just a relation, we can equi-join its output straight back to `prices` for
+# the day-0 close, all in one statement.
+#
+# One operational note. Joining the 100-row events table against the 650-row
+# calendar, rather than the 65k-row price panel, keeps the join tiny. Derive
+# compact, purpose-built tables and join those.
+#
+# We assert one output row per event and cross-check the session mapping against
+# a numpy `searchsorted` on the calendar. Cheap asserts like these turn
+# alignment mistakes into loud failures instead of quietly shifted event
+# windows.
 
 # %%
 # Forward ASOF: each announcement snaps to the next session actually present
@@ -209,16 +233,15 @@ weekend.assign(
 ).head(6)
 
 # %% [markdown]
-# Every weekend announcement lands on the following Monday's session - no
-# calendar arithmetic, no `BusinessDay` offsets, and it would work unchanged
-# for holidays because the join targets the sessions *actually present* in
-# the price table.
+# Every weekend announcement lands on the following Monday's session. No
+# calendar arithmetic, no `BusinessDay` offsets, and it would work unchanged for
+# holidays, because the join targets the sessions *actually present* in the
+# price table.
 #
 # ## 4. Returns and the market factor
 #
-# Simple returns per symbol via `lag()`, and the equal-weight market return
-# as a window average over each session - one statement, computed on sorted
-# storage.
+# Simple returns per symbol via `lag()`, and the equal-weight market return as a
+# window average over each session. One statement, computed on sorted storage.
 
 # %%
 PREV_CLOSE = sql_expr("lag(close)").over(partition_by="symbol", order_by="ts")
@@ -237,10 +260,12 @@ rets.head(3)
 # %% [markdown]
 # ## 5. Market model and CAR[-10,+10]
 #
-# For each event: estimate alpha/beta on trading days [-130, -11] relative to
-# the effective session, then cumulate abnormal returns `AR = r - (a + b*mkt)`
-# over [-10, +10]. Cross-sectional averaging with a normal-approximation band
-# (`1.96 * sd / sqrt(n)`).
+# For each event we estimate alpha and beta on trading days [-130, -11] relative
+# to the effective session, then cumulate abnormal returns
+# `AR = r - (a + b*mkt)` over [-10, +10].
+#
+# Cross-sectional averaging uses a normal-approximation band,
+# `1.96 * sd / sqrt(n)`.
 
 # %%
 panel = rets.pivot(index="ts", columns="symbol", values="ret")
@@ -301,32 +326,35 @@ ax.legend()
 fig.tight_layout()
 
 # %% [markdown]
-# The study recovers what we injected: the treated group jumps ~+2% on day 0
-# (a sharp, highly significant one-day difference) and drifts toward ~+3.5%
-# by day +10, while the control CAR stays inside its band around zero - the
-# placebo behaves. Note how much weaker the CAR[+10] t-stat is than the
-# day-0 one: cumulating 21 days of idiosyncratic noise on ~50 events erodes
-# power quickly, which is exactly why real event studies live and die by
-# sample size. Pre-event CARs are flat for both groups, confirming the
-# alignment introduced no lookahead: announcements only touch prices from
-# the effective session onward.
+# The study recovers what we injected. The treated group jumps about +2% on day
+# 0, a sharp and highly significant one-day difference, then drifts toward about
+# +3.5% by day +10. The control CAR stays inside its band around zero, so the
+# placebo behaves.
+#
+# Note how much weaker the CAR[+10] t-stat is than the day-0 one. Cumulating 21
+# days of idiosyncratic noise on roughly 50 events erodes power quickly, which
+# is exactly why real event studies live and die by sample size.
+#
+# Pre-event CARs are flat for both groups, confirming the alignment introduced
+# no lookahead. Announcements only touch prices from the effective session
+# onward.
 #
 # ## Takeaways
 #
 # - `asof_join(..., 'forward', tolerance)` against a materialized trading
 #   calendar is the right primitive for "first session at or after the
-#   announcement" - holiday-agnostic, with NULLs (not silent garbage) past
-#   the tolerance. The tolerance is raw microseconds, matching the
-#   `timestamp[us, UTC]` time column.
-# - `asof_join(...)` composes like any relation: one statement chained the
+#   announcement". It is holiday-agnostic, and past the tolerance it returns
+#   NULLs rather than silent garbage. The tolerance is raw microseconds,
+#   matching the `timestamp[us, UTC]` time column.
+# - `asof_join(...)` composes like any relation. One statement chained the
 #   forward alignment into an equi-join back to `prices` for day-0 closes.
-# - Keeping `events` as a first-class h5i-db table (time column = raw
-#   announcement time) means the calendar mapping lives in the query, so
-#   re-running against a revised price panel re-resolves it automatically.
+# - Keeping `events` as a first-class h5i-db table, with the time column set to
+#   raw announcement time, means the calendar mapping lives in the query. Re-run
+#   against a revised price panel and it re-resolves automatically.
 # - Returns and the equal-weight market factor came from one SQL window
-#   statement; only the per-event OLS loop lives in pandas.
-# - Injecting a known effect into synthetic data (with a control group left
-#   untouched) turns the recipe into a self-verifying test of the pipeline.
+#   statement. Only the per-event OLS loop lives in pandas.
+# - Injecting a known effect into synthetic data, with a control group left
+#   untouched, turns the recipe into a self-verifying test of the pipeline.
 
 # %%
 db.close()

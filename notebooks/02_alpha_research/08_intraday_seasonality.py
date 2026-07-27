@@ -1,18 +1,21 @@
 # %% [markdown]
 # # Intraday seasonality: volume U-shape, volatility smile, spread decay
 #
-# Almost every execution and alpha model conditions on time of day: volume
+# Almost every execution and alpha model conditions on time of day. Volume
 # concentrates at the open and close, volatility peaks in the first hour,
-# spreads narrow through the morning. Measuring these curves correctly is a
-# timezone problem before it is a statistics problem - "09:30 New York"
-# drifts against UTC at every DST transition, and a naive `EXTRACT(hour)`
-# on UTC timestamps smears buckets by an hour twice a year. h5i-db's
-# `time_bucket` takes an IANA timezone as its third argument, so buckets
-# align to *wall-clock* time in that zone, DST included.
+# spreads narrow through the morning.
 #
-# We measure the curves twice: on synthetic tick data (where we know which
-# effects the generator does and does not contain - honesty checkpoint), and
-# on real SPY/QQQ hourly bars.
+# Measuring these curves correctly is a timezone problem before it is a
+# statistics problem. "09:30 New York" drifts against UTC at every DST
+# transition, and a naive `EXTRACT(hour)` on UTC timestamps smears buckets by an
+# hour twice a year.
+#
+# `time_bucket` takes an IANA timezone as its third argument, so buckets align
+# to *wall-clock* time in that zone, DST included.
+#
+# We measure the curves twice: on synthetic tick data, where we know which
+# effects the generator does and does not contain, and on real SPY/QQQ hourly
+# bars.
 
 # %%
 import numpy as np
@@ -26,18 +29,45 @@ import cookbook_utils as cu
 db = h5i_db.Database(cu.fresh_db("alpha_seasonality"), create=True)
 
 # %% [markdown]
-# ## 1. Five days of ticks, sixty days of real bars
+# ## 1. The data
+#
+# Two feeds from `cu.make_trades_and_quotes`, five sessions, three symbols.
+# Trades are one row per print, quotes one row per change in the best bid or
+# offer.
+#
+# | table | columns |
+# | --- | --- |
+# | `trades` | `ts`, `symbol`, `price`, `size`, `exchange`, `side` |
+# | `quotes` | `ts`, `symbol`, `bid`, `ask`, `bid_size`, `ask_size` |
+#
+# `ts` is `timestamp[us, tz=UTC]` and ascending in both.
 
 # %%
 trades, quotes = cu.make_trades_and_quotes(days=5)
+print(f"trades: {trades.num_rows:,} rows   quotes: {quotes.num_rows:,} rows")
+trades.to_pandas().head()
+
+# %%
+quotes.to_pandas().head()
+
+# %% [markdown]
+# The real side is 60 days of hourly SPY and QQQ bars from `cu.fetch_intraday`:
+# `ts`, `symbol`, `open`, `high`, `low`, `close`, `volume`, one row per symbol
+# per hour.
+
+# %%
+bars = cu.fetch_intraday(["SPY", "QQQ"], period="60d", interval="1h").sort_by(
+    [("ts", "ascending"), ("symbol", "ascending")]
+)
+print(f"bars_1h: {bars.num_rows:,} rows x {bars.num_columns} columns")
+bars.to_pandas().head()
+
+# %%
 for name, tbl in (("trades", trades), ("quotes", quotes)):
     db.create_table(name, tbl.schema, time_column="ts", sort_key=["ts", "symbol"])
     db.append(name, tbl, note="5-day synthetic feed")
 
 # append enforces the declared sort key, so order by (ts, symbol) explicitly
-bars = cu.fetch_intraday(["SPY", "QQQ"], period="60d", interval="1h").sort_by(
-    [("ts", "ascending"), ("symbol", "ascending")]
-)
 db.create_table("bars_1h", bars.schema, time_column="ts", sort_key=["ts", "symbol"])
 db.append("bars_1h", bars, note="real SPY/QQQ hourly bars")
 {t: len(db.read(t)) for t in db.tables()}
@@ -45,13 +75,17 @@ db.append("bars_1h", bars, note="real SPY/QQQ hourly bars")
 # %% [markdown]
 # ## 2. Volume by 30 minutes of the New York day
 #
-# `time_bucket('30m', ts, 'America/New_York')` anchors bucket boundaries to
-# NY wall-clock time. Within one June week that is indistinguishable from
-# UTC bucketing - but across the March/November DST transitions the NY
-# buckets stay pinned to 09:30, 10:00, ... while UTC buckets would shift by
-# an hour mid-sample and split every time-of-day average into two blurred
-# populations. Same query, correct all year. The wall-clock label comes from
-# converting the bucket start to NY time in pandas.
+# `time_bucket('30m', ts, 'America/New_York')` anchors bucket boundaries to NY
+# wall-clock time.
+#
+# Within one June week that is indistinguishable from UTC bucketing. Across the
+# March and November DST transitions, the NY buckets stay pinned to 09:30,
+# 10:00 and so on, while UTC buckets would shift by an hour mid-sample and split
+# every time-of-day average into two blurred populations. Same query, correct
+# all year.
+#
+# The wall-clock label comes from converting the bucket start to NY time in
+# pandas.
 
 # %%
 NY30 = time_bucket("30m", col("ts"), timezone="America/New_York")
@@ -83,9 +117,10 @@ ax.legend()
 fig.tight_layout()
 
 # %% [markdown]
-# The U-shape is pronounced - by construction: the generator concentrates
-# 40% of arrivals near the open and 20% near the close, mimicking the real
-# pattern. The useful summary numbers for an execution scheduler:
+# The U-shape is pronounced, and by construction. The generator concentrates 40%
+# of arrivals near the open and 20% near the close, mimicking the real pattern.
+#
+# Here are the summary numbers an execution scheduler would want:
 
 # %%
 first_last = pd.DataFrame(
@@ -98,16 +133,19 @@ first_last = pd.DataFrame(
 (first_last * 100).round(1)
 
 # %% [markdown]
-# ## 3. Volatility and spreads by time of day - an honest null
+# ## 3. Volatility and spreads by time of day: an honest null
 #
-# The same bucketing applied to 30-minute bar returns (volatility smile) and
-# quoted spreads. Here the synthetic data *cannot* show the real-world
-# effect, and it is worth being precise about why: the generator's price is
-# a homogeneous diffusion in calendar time (variance ∝ elapsed time,
-# regardless of trade intensity) and its spread is drawn once per
-# symbol-day. So the honest expectation is a *flat* volatility curve and a
-# *flat* spread curve - which is what we get, and a useful placebo: any
-# curvature the pipeline showed here would be a bug in the pipeline.
+# The same bucketing applied to 30-minute bar returns gives the volatility
+# smile, and applied to quotes gives spread decay.
+#
+# Here the synthetic data *cannot* show the real-world effect, and it is worth
+# being precise about why. The generator's price is a homogeneous diffusion in
+# calendar time, so variance is proportional to elapsed time regardless of trade
+# intensity, and its spread is drawn once per symbol-day.
+#
+# So the honest expectation is a *flat* volatility curve and a *flat* spread
+# curve. That is what we get, and it makes a useful placebo: any curvature the
+# pipeline showed here would be a bug in the pipeline.
 
 # %%
 smile = (
@@ -147,16 +185,18 @@ pd.DataFrame(
 ).loc[["09:30", "10:30", "12:30", "14:30", "15:30"]].round(2)
 
 # %% [markdown]
-# Flat, as predicted: the raw bucket stds wiggle (each rests on 15 bar
-# returns), but Levene's test finds no evidence of unequal variance across
-# buckets, and the spread column is constant to the basis point. The method
-# is validated; the effect is absent from this generator. Real markets show
-# ~2-3x first-hour volatility and spreads that start wide and tighten within
-# minutes - the volatility half of that is next, from real data.
+# Flat, as predicted. The raw bucket stds wiggle, since each rests on 15 bar
+# returns, but Levene's test finds no evidence of unequal variance across
+# buckets, and the spread column is constant to the basis point.
 #
-# One more timezone note while we are here: with `'1d'` widths the timezone
-# argument controls where the *day* boundary falls. For a 24h asset class
-# that decides which trades belong to "Monday":
+# The method is validated and the effect is absent from this generator. Real
+# markets show roughly 2 to 3x first-hour volatility, and spreads that start
+# wide and tighten within minutes. The volatility half of that comes next, from
+# real data.
+#
+# One more timezone note while we are here. With `'1d'` widths the timezone
+# argument controls where the *day* boundary falls, which for a 24h asset class
+# decides which trades belong to "Monday".
 
 # %%
 (
@@ -172,17 +212,18 @@ pd.DataFrame(
 )
 
 # %% [markdown]
-# For US equities the session sits inside one UTC day, so both groupings
-# agree and only the labels differ (NY midnight = 04:00 UTC). For FX or
-# crypto flowing through 00:00 UTC, the choice changes every daily number -
-# see the 24/7 markets recipe.
+# For US equities the session sits inside one UTC day, so both groupings agree
+# and only the labels differ, with NY midnight at 04:00 UTC. For FX or crypto
+# flowing through 00:00 UTC, the choice changes every daily number. The 24/7
+# markets recipe covers that case.
 #
 # ## 4. The real thing: SPY and QQQ, 60 days of hourly bars
 #
-# Returns per bar via `lag()` in SQL, then the same wall-clock grouping.
-# One caveat kept honest: this cached sample (late April to July) does not
-# straddle a DST transition, so UTC bucketing would happen to work here too
-# - the NY-anchored version is the one that keeps working in March.
+# Returns per bar come from `lag()` in SQL, then the same wall-clock grouping.
+#
+# One caveat kept honest: this cached sample, late April to July, does not
+# straddle a DST transition, so UTC bucketing would happen to work here too. The
+# NY-anchored version is the one that keeps working in March.
 
 # %%
 real = (
@@ -224,27 +265,28 @@ print("SPY first-hour volume share: {:.1%}   last-hour: {:.1%}".format(
 
 # %% [markdown]
 # The real curves deliver what the synthetic ticks could not: the U-shaped
-# volume profile *and* an elevated post-open volatility that decays into
-# midday (the 09:30 bar is excluded from the smile since its `lag()` return
-# spans the overnight gap - a classic subtlety worth encoding in the
-# pipeline, not in a footnote).
+# volume profile *and* an elevated post-open volatility that decays into midday.
+#
+# The 09:30 bar is excluded from the smile, because its `lag()` return spans the
+# overnight gap. That is a classic subtlety worth encoding in the pipeline
+# rather than in a footnote.
 #
 # ## Takeaways
 #
-# - `time_bucket(width, ts, 'America/New_York')` is the DST-safe way to
-#   build time-of-day statistics: buckets pin to wall-clock sessions, so
-#   March and November do not smear your seasonal curves. With `'1d'` widths
-#   the same argument decides where the trading day starts.
-# - The whole pipeline is two GROUP BY queries per curve - volume, bar
-#   returns, and spreads each collapse from hundreds of thousands of ticks
-#   to a few dozen buckets inside the database.
-# - Synthetic data is a placebo, not a substitute: it reproduced the volume
-#   U-shape (built into the generator) and correctly showed *flat*
-#   volatility and spread curves (absent from the generator). The real
-#   SPY/QQQ bars supplied the volatility smile.
-# - Excluding the overnight return from the 09:30 bucket is the kind of
-#   one-line correctness detail that separates a usable seasonality curve
-#   from a subtly wrong one.
+# - `time_bucket(width, ts, 'America/New_York')` is the DST-safe way to build
+#   time-of-day statistics. Buckets pin to wall-clock sessions, so March and
+#   November do not smear your seasonal curves. With `'1d'` widths the same
+#   argument decides where the trading day starts.
+# - The whole pipeline is two GROUP BY queries per curve. Volume, bar returns
+#   and spreads each collapse from hundreds of thousands of ticks to a few dozen
+#   buckets inside the database.
+# - Synthetic data is a placebo, not a substitute. It reproduced the volume
+#   U-shape, which is built into the generator, and correctly showed *flat*
+#   volatility and spread curves, which are absent from it. The real SPY/QQQ
+#   bars supplied the volatility smile.
+# - Excluding the overnight return from the 09:30 bucket is the kind of one-line
+#   correctness detail that separates a usable seasonality curve from a subtly
+#   wrong one.
 
 # %%
 db.close()

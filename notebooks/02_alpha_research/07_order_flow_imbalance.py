@@ -1,18 +1,19 @@
 # %% [markdown]
 # # Order flow imbalance: does signed volume predict returns?
 #
-# Order flow imbalance (OFI) - the excess of buyer-initiated over
-# seller-initiated volume - is the workhorse microstructure signal: strongly
-# correlated with contemporaneous price moves, and (in real markets, at short
-# horizons) mildly predictive of the next move. This recipe builds both
-# flavors on h5i-db:
+# Order flow imbalance is the excess of buyer-initiated over seller-initiated
+# volume, and it is the workhorse microstructure signal. It correlates strongly
+# with contemporaneous price moves and, in real markets at short horizons, is
+# mildly predictive of the next move.
 #
-# 1. **trade OFI** - audit signing rules against ground truth (Lee-Ready via
-#    an ASOF join to the prevailing quote, tick test as fallback), sign the
-#    tape, bucket signed volume per minute,
-# 2. **quote OFI** (Cont, Kukanov & Stoikov 2014) - order-book pressure from
-#    changes in best bid/ask prices and sizes, via `lag()` windows,
-# 3. an honest look at contemporaneous vs *predictive* correlation with
+# In this recipe we build both flavours:
+#
+# 1. **trade OFI**: audit signing rules against ground truth, using Lee-Ready
+#    via an ASOF join to the prevailing quote with the tick test as fallback,
+#    then sign the tape and bucket signed volume per minute,
+# 2. **quote OFI** (Cont, Kukanov and Stoikov 2014): order-book pressure from
+#    changes in best bid and ask prices and sizes, via `lag()` windows,
+# 3. an honest look at contemporaneous versus *predictive* correlation with
 #    1-minute returns.
 
 # %%
@@ -27,20 +28,39 @@ import cookbook_utils as cu
 db = h5i_db.Database(cu.fresh_db("alpha_ofi"), create=True)
 
 # %% [markdown]
-# ## 1. A quote stream, and a tape printed off it
+# ## 1. The data
 #
-# One generator caveat first: `make_trades`' prints follow a random walk
-# that is only loosely coupled to `make_quotes`' mids, which would make
-# quote-based trade signing meaningless. So we keep the synthetic quote
-# stream and *print our own tape off it*, the way a matching engine would:
-# a random 25% of quote updates trigger a trade 1-50 ms later, buyers lift
-# the offer, sellers hit the bid, with the true aggressor side recorded.
-# The tape is price-consistent with the quotes by construction, and every
-# signing rule below can be scored against ground truth - a luxury real
-# data never affords.
+# Two sessions of top-of-book quotes from `cu.make_quotes`, one row per change
+# in the best bid or offer.
+#
+# | column | type | meaning |
+# | --- | --- | --- |
+# | `ts` | `timestamp[us, tz=UTC]` | quote timestamp, ascending |
+# | `symbol` | `string` | ticker, `AAPL` or `MSFT` |
+# | `bid`, `ask` | `float64` | best bid and offer |
+# | `bid_size`, `ask_size` | `int64` | displayed depth at each side |
 
 # %%
 quotes = cu.make_quotes(symbols=["AAPL", "MSFT"], days=2)
+print(f"quotes: {quotes.num_rows:,} rows x {quotes.num_columns} columns")
+quotes.to_pandas().head()
+
+# %% [markdown]
+# One generator caveat shapes what follows. `make_trades` prints follow a random
+# walk only loosely coupled to `make_quotes` mids, which would make quote-based
+# trade signing meaningless.
+#
+# So we keep the synthetic quote stream and *print our own tape off it*, the way
+# a matching engine would. A random 25% of quote updates trigger a trade 1 to 50
+# ms later, buyers lift the offer, sellers hit the bid, and the true aggressor
+# side is recorded.
+#
+# The tape is price-consistent with the quotes by construction, so every signing
+# rule below can be scored against ground truth. That is a luxury real data
+# never affords. The printed tape has columns `ts`, `symbol`, `price`, `size`
+# and `side`.
+
+# %%
 q = quotes.to_pandas()
 
 rng = np.random.default_rng(21)
@@ -64,7 +84,10 @@ trade_schema = pa.schema(
 )
 trades_df = picks[["ts", "symbol", "price", "size", "side"]].sort_values(["ts", "symbol"])
 trades = pa.Table.from_pandas(trades_df, preserve_index=False).cast(trade_schema)
+print(f"{len(trades_df):,} trades printed off {len(q):,} quotes")
+trades_df.head()
 
+# %%
 db.create_table("quotes", quotes.schema, time_column="ts", sort_key=["ts", "symbol"])
 db.append("quotes", quotes, note="2-day synthetic NBBO")
 db.create_table("trades", trade_schema, time_column="ts", sort_key=["ts", "symbol"])
@@ -74,16 +97,20 @@ print({t: len(db.read(t)) for t in db.tables()})
 # %% [markdown]
 # ## 2. Audit the signing rules on a QA window
 #
-# Lee-Ready says: above the prevailing mid → buy, below → sell, at mid →
-# fall back to the tick test (uptick → buy). The prevailing-quote lookup is
-# `asof_join(..., 'backward', 5_000_000)`: the latest quote at most 5
-# seconds old, per symbol, tolerance in raw microseconds.
+# Lee-Ready says: above the prevailing mid is a buy, below is a sell, and at the
+# mid you fall back to the tick test, where an uptick is a buy.
+#
+# The prevailing-quote lookup is `asof_join(..., 'backward', 5_000_000)`: the
+# latest quote at most 5 seconds old, per symbol, with the tolerance in raw
+# microseconds.
 #
 # We run the audit on a midday 15-minute window, carved out with time-ranged
-# `db.read` calls (raw microsecond bounds, pruned at the segment level) and
-# stored as small workbench tables. A windowed audit is fast to iterate on
-# and easy to eyeball; we assert the join returns exactly one row per trade
-# and cross-check the attached quotes against `pandas.merge_asof`.
+# `db.read` calls using raw microsecond bounds, pruned at the segment level, and
+# stored as small workbench tables. A windowed audit is fast to iterate on and
+# easy to eyeball.
+#
+# We assert the join returns exactly one row per trade, and cross-check the
+# attached quotes against `pandas.merge_asof`.
 
 # %%
 w0 = int(pd.Timestamp("2026-06-01 16:00", tz="UTC").value // 1000)
@@ -144,19 +171,20 @@ for rule in ("lr_sign", "tick_sign"):
     print(f"  {rule:9s}: {acc:.1%} accuracy vs true aggressor side ({len(scored):,} classified)")
 
 # %% [markdown]
-# On a price-consistent tape, Lee-Ready earns its reputation: the quote rule
-# is nearly perfect (errors come from quotes that updated in the 1-50 ms
-# between quote and print), while the pure tick test trails well behind -
-# the same ordering seen on real TAQ, where Lee-Ready scores ~85%.
+# On a price-consistent tape, Lee-Ready earns its reputation. The quote rule is
+# nearly perfect, with errors coming from quotes that updated in the 1 to 50 ms
+# between quote and print, while the pure tick test trails well behind. That is
+# the same ordering seen on real TAQ, where Lee-Ready scores around 85%.
 #
 # ## 3. Sign the full tape
 #
-# The audited quote rule would need the trade-quote ASOF at full scale.
-# For this recipe the tick test (a pure `lag()` window over `trades`, no
-# alignment needed) is accurate enough to carry the OFI study, and we keep
-# the generator's true side as an oracle upper bound. The signed tape is
-# persisted as a first-class table: signing is expensive enough that you
-# want it done once, committed, and versioned.
+# The audited quote rule would need the trade-quote ASOF at full scale. For this
+# recipe the tick test is accurate enough to carry the OFI study, and it is a
+# pure `lag()` window over `trades` with no alignment needed. We keep the
+# generator's true side as an oracle upper bound.
+#
+# The signed tape is persisted as a first-class table. Signing is expensive
+# enough that you want it done once, committed and versioned.
 
 # %%
 signed = (
@@ -192,7 +220,7 @@ db.append("signed_trades", signed.cast(signed_schema), note="tick-test + oracle 
 # %% [markdown]
 # ## 4. Trade OFI per minute
 #
-# One `time_bucket` aggregation: signed buy/sell volume, normalized
+# One `time_bucket` aggregation gives signed buy and sell volume, the normalized
 # imbalance `(buys - sells) / total`, and the bucket's closing print via the
 # `last_value(... ORDER BY ts)` idiom.
 
@@ -220,10 +248,12 @@ trade_ofi.head(4)
 # %% [markdown]
 # ## 5. Quote OFI (Cont et al.)
 #
-# Book-pressure OFI needs *changes* at the best: a bid price rising (or size
-# growing at an unchanged bid) adds buy pressure; the mirror on the ask side
-# subtracts. That is four `lag()` comparisons per quote - pure SQL window
-# machinery - summed per minute, with the bucket's closing mid for returns.
+# Book-pressure OFI needs *changes* at the best. A bid price rising, or size
+# growing at an unchanged bid, adds buy pressure. The mirror on the ask side
+# subtracts.
+#
+# That is four `lag()` comparisons per quote, pure SQL window machinery, summed
+# per minute, with the bucket's closing mid for returns.
 
 # %%
 def prev(name: str):
@@ -256,10 +286,13 @@ quote_ofi.head(4)
 # %% [markdown]
 # ## 6. Contemporaneous vs predictive
 #
-# The question that matters: does this minute's OFI tell you about *this*
-# minute's return (mechanical) or the *next* minute's (alpha)? We compute
-# both correlations per symbol, per estimator. Returns are within-session
-# only (`shift` inside each symbol/day, so no overnight artifacts).
+# Here is the question that matters. Does this minute's OFI tell you about
+# *this* minute's return, which is mechanical, or the *next* minute's, which
+# would be alpha?
+#
+# We compute both correlations per symbol, per estimator. Returns are
+# within-session only, with the `shift` taken inside each symbol and day, so
+# there are no overnight artifacts.
 
 # %%
 def bucket_corrs(frame, ofi_col, px_col):
@@ -312,48 +345,48 @@ ax.legend()
 fig.tight_layout()
 
 # %% [markdown]
-# Three honest lessons in one table:
+# Three honest lessons in one table.
 #
-# - **Quote OFI** shows the textbook contemporaneous link (~0.5-0.6): book
-#   pressure and same-minute mid moves are near-mechanically related.
-# - **Trade OFI with tick-test signs** also reads ~0.5 contemporaneous -
-#   but the **oracle** row exposes most of that as circular. With *true*
-#   aggressor signs the correlation drops to ~0.07: in this market the mid
-#   is an exogenous random walk, flow has no price impact, and true signed
-#   volume relates to the minute's return only through the bounce of the
-#   closing print. The tick rule manufactures the rest by deriving signs
-#   from the very price changes we then correlate against. On real data,
-#   where flow does move price, the oracle-equivalent number would be
-#   solidly positive - the comparison is how you learn to ask.
-# - **Predictive** correlations sit near zero with a negative tilt for
-#   trade OFI: bid-ask bounce means a buy-heavy minute tends to close at
-#   the ask and mean-revert a touch. Even perfect signs would not help -
-#   there is no flow-to-future-price causality here to find, and the
-#   pipeline correctly finds none.
+# - **Quote OFI** shows the textbook contemporaneous link, around 0.5 to 0.6.
+#   Book pressure and same-minute mid moves are near-mechanically related.
+# - **Trade OFI with tick-test signs** also reads about 0.5 contemporaneous. The
+#   **oracle** row exposes most of that as circular. With *true* aggressor signs
+#   the correlation drops to roughly 0.07: in this market the mid is an
+#   exogenous random walk, flow has no price impact, and true signed volume
+#   relates to the minute's return only through the bounce of the closing print.
+#   The tick rule manufactures the rest by deriving signs from the very price
+#   changes we then correlate against. On real data, where flow does move price,
+#   the oracle-equivalent number would be solidly positive. The comparison is
+#   how you learn to ask.
+# - **Predictive** correlations sit near zero with a negative tilt for trade OFI.
+#   Bid-ask bounce means a buy-heavy minute tends to close at the ask and
+#   mean-revert a touch. Even perfect signs would not help, because there is no
+#   flow-to-future-price causality here to find, and the pipeline correctly
+#   finds none.
 #
-# On real tick data quote OFI does carry short-horizon predictive power -
-# but the reality check applies before calling it alpha: the effect lives at
-# seconds-to-minutes horizons in size-constrained depth, and capturing a
-# ~1 bp move costs you the spread plus fees. OFI signals are best understood
-# as execution-layer inputs (when to cross, when to post), not standalone
-# strategies.
+# On real tick data quote OFI does carry short-horizon predictive power. The
+# reality check still applies before calling it alpha: the effect lives at
+# seconds-to-minutes horizons in size-constrained depth, and capturing a 1 bp
+# move costs you the spread plus fees. OFI signals are best understood as
+# execution-layer inputs, deciding when to cross and when to post, not as
+# standalone strategies.
 #
 # ## Takeaways
 #
-# - `asof_join(..., 'backward', tolerance)` is the prevailing-quote lookup,
-#   and time-ranged `db.read(time_start=, time_end=)` carves QA windows in
-#   O(window). Current-build caveat: keep both ASOF inputs within one
-#   storage batch (~8k rows) and assert one output row per left row -
-#   larger inputs truncate silently. Cross-checking against
+# - `asof_join(..., 'backward', tolerance)` is the prevailing-quote lookup, and
+#   time-ranged `db.read(time_start=, time_end=)` carves QA windows in
+#   O(window). One current-build caveat: keep both ASOF inputs within one
+#   storage batch, roughly 8k rows, and assert one output row per left row,
+#   because larger inputs truncate silently. Cross-checking against
 #   `pandas.merge_asof` costs three lines and buys certainty.
-# - Signing rules are CASE expressions over that join plus `lag()` windows;
-#   persisting the result as a `signed_trades` table means the pass runs
-#   once, and every downstream study reads versioned, committed signs.
-# - Both OFI flavors reduce to one `time_bucket` GROUP BY each - with
+# - Signing rules are CASE expressions over that join plus `lag()` windows.
+#   Persisting the result as a `signed_trades` table means the pass runs once,
+#   and every downstream study reads versioned, committed signs.
+# - Both OFI flavours reduce to one `time_bucket` GROUP BY each, with
 #   `last_value(... ORDER BY ts)` giving bucket closes without self-joins.
-# - Honest nulls matter: solid contemporaneous correlations alongside
-#   predictive correlations ≈ 0 (even with oracle signs) is the signature
-#   of a mechanical, not exploitable, relationship.
+# - Honest nulls matter. Solid contemporaneous correlations alongside predictive
+#   correlations near zero, even with oracle signs, is the signature of a
+#   mechanical rather than exploitable relationship.
 
 # %%
 db.close()

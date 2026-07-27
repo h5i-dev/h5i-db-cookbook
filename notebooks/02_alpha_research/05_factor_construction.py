@@ -1,14 +1,19 @@
 # %% [markdown]
 # # Building a point-in-time factor library
 #
-# Equity factors die by lookahead: a B/P ratio computed with a book value the
-# market had not seen yet will backtest beautifully and trade terribly. This
-# recipe builds three classic factors - value (B/P), momentum (12-1), and a
-# quality proxy (revenue-growth stability) - with the fundamental data joined
-# **as of its report date** via h5i-db's `asof_join`, evaluates them with
-# monthly ICs and quintile spreads, and persists the result as a versioned,
-# snapshotted factor panel: the "factor library" pattern, where every rebuild
-# is a commit you can diff and pin.
+# Equity factors die by lookahead. A B/P ratio computed with a book value the
+# market had not seen yet will backtest beautifully and trade terribly.
+#
+# This recipe builds three classic factors and evaluates them honestly:
+#
+# 1. join fundamentals **as of their report date** with `asof_join`,
+# 2. assemble value (B/P), momentum (12-1) and a quality proxy from
+#    revenue-growth stability,
+# 3. evaluate them with monthly ICs and quintile spreads,
+# 4. persist the result as a versioned, snapshotted factor panel.
+#
+# That last step is the "factor library" pattern, where every rebuild is a
+# commit you can diff and pin.
 
 # %%
 import numpy as np
@@ -23,18 +28,45 @@ import cookbook_utils as cu
 db = h5i_db.Database(cu.fresh_db("alpha_factors"), create=True)
 
 # %% [markdown]
-# ## 1. Prices and fundamentals as separate feeds
+# ## 1. The data
 #
-# 50 synthetic names: ~3 years of daily prices, and 12 quarters of
-# fundamentals where `ts` is the **report** (public availability) timestamp -
-# 25–55 days after `period_end`, like real filings. Keeping the two feeds in
-# separate tables with their own time semantics is what makes point-in-time
-# joins possible at all.
+# Two feeds for 50 synthetic names. The price side is a daily OHLCV panel from
+# `cu.make_daily_prices`, roughly three years, one row per symbol per session.
+#
+# | column | type | meaning |
+# | --- | --- | --- |
+# | `ts` | `timestamp[us, tz=UTC]` | session close, 20:00 UTC |
+# | `symbol` | `string` | ticker, `STK000` … `STK049` |
+# | `open`, `high`, `low`, `close` | `float64` | session prices |
+# | `volume` | `int64` | shares traded |
 
 # %%
 prices = cu.make_daily_prices()   # 50 symbols, 750 sessions
-funda = cu.make_fundamentals()    # 50 symbols, 12 quarters, report-lagged ts
+print(f"prices: {prices.num_rows:,} rows x {prices.num_columns} columns")
+prices.to_pandas().head()
 
+# %% [markdown]
+# The fundamentals side is 12 quarters from `cu.make_fundamentals`, where `ts`
+# is the **report** timestamp, 25 to 55 days after `period_end`, like real
+# filings.
+#
+# | column | type | meaning |
+# | --- | --- | --- |
+# | `ts` | `timestamp[us, tz=UTC]` | report time: when the numbers went public |
+# | `period_end` | `timestamp[us, tz=UTC]` | fiscal quarter end |
+# | `symbol` | `string` | ticker |
+# | `eps` | `float64` | reported earnings per share |
+# | `revenue_m`, `book_value_m` | `float64` | revenue and book value, USD millions |
+#
+# Keeping the two feeds in separate tables with their own time semantics is what
+# makes point-in-time joins possible at all.
+
+# %%
+funda = cu.make_fundamentals()    # 50 symbols, 12 quarters, report-lagged ts
+print(f"fundamentals: {funda.num_rows:,} rows x {funda.num_columns} columns")
+funda.to_pandas().head()
+
+# %%
 px_schema = pa.schema(
     [pa.field("ts", pa.timestamp("us", tz="UTC"), nullable=False)]
     + [prices.schema.field(i) for i in range(1, len(prices.schema))]
@@ -53,11 +85,13 @@ print(f"prices: {prices.num_rows:,} rows   fundamentals: {funda.num_rows:,} rows
 # %% [markdown]
 # ## 2. Derived fundamental signals, per report date
 #
-# Quality here = *stability* of quarterly revenue growth: the (negated) stddev
-# of the last four quarter-over-quarter growth rates. Both the growth and its
-# trailing stddev are window functions over the report-time series, so this is
-# one SQL statement whose output we store as its own table, `fund_signals` -
-# derived data is data, and it should be versioned like everything else.
+# Quality here means *stability* of quarterly revenue growth: the negated stddev
+# of the last four quarter-over-quarter growth rates.
+#
+# Both the growth and its trailing stddev are window functions over the
+# report-time series, so this is one SQL statement. We store its output as its
+# own table, `fund_signals`. Derived data is data, and it should be versioned
+# like everything else.
 
 # %%
 PREV_REV = sql_expr("lag(revenue_m)").over(partition_by="symbol", order_by="ts")
@@ -92,9 +126,10 @@ db.append("fund_signals", fund_sig.cast(fs_schema), note="rev growth + 4q stabil
 #
 # Same pattern as the momentum recipe: `lag(21)/lag(252)` per symbol for 12-1
 # momentum, sampled on the last trading day of each month via
-# `time_bucket('1mo', ...)`. This panel also gets stored - `asof_join`
-# operates on tables, and month-end observation dates are exactly the left
-# side we want fundamentals attached to.
+# `time_bucket('1mo', ...)`.
+#
+# This panel also gets stored. `asof_join` operates on tables, and month-end
+# observation dates are exactly the left side we want fundamentals attached to.
 
 # %%
 def lag_close(n: int):
@@ -137,12 +172,16 @@ db.table("panel_me").select(rows=count_star(), months=col("ts").n_unique()).to_p
 # %% [markdown]
 # ## 4. The point-in-time join
 #
-# `asof_join('panel_me', 'fund_signals', 'ts', 'ts', 'symbol')`: for every
-# month-end row, the latest fundamental row **reported at or before** that
-# date, per symbol. No calendar arithmetic, no "shift the quarter by 45 days"
-# heuristics - the report timestamp is the join key, so restatement lags are
-# handled by construction. `ts_right` shows exactly which filing each month
-# used; months before a symbol's first report get NULLs, as they should.
+# `asof_join('panel_me', 'fund_signals', 'ts', 'ts', 'symbol')` gives, for every
+# month-end row, the latest fundamental row **reported at or before** that date,
+# per symbol.
+#
+# There is no calendar arithmetic and no "shift the quarter by 45 days"
+# heuristic. The report timestamp is the join key, so restatement lags are
+# handled by construction.
+#
+# `ts_right` shows exactly which filing each month used, and months before a
+# symbol's first report get NULLs, as they should.
 
 # %%
 pit = (
@@ -159,14 +198,14 @@ pit[["ts", "symbol", "close", "momentum", "book_value_m", "report_ts", "stalenes
 # %% [markdown]
 # ## 5. Assemble the three factors
 #
-# - **value**: B/P = book value / market cap, with a fixed synthetic share
-#   count per symbol (the generator has no shares outstanding; a static,
-#   seeded share count keeps the cross-section meaningful and deterministic).
+# - **value**: B/P, book value over market cap, with a fixed synthetic share
+#   count per symbol. The generator has no shares outstanding, and a static,
+#   seeded share count keeps the cross-section meaningful and deterministic.
 # - **momentum**: 12-1, straight from the panel.
-# - **quality**: −stddev of the last 4 revenue growth rates, required
+# - **quality**: the negated stddev of the last 4 revenue growth rates, required
 #   complete (`n_g = 4`).
 #
-# Each factor is cross-sectionally z-scored per month (clipped at ±3), which
+# Each factor is cross-sectionally z-scored per month and clipped at ±3, which
 # makes them comparable and combinable.
 
 # %%
@@ -196,9 +235,11 @@ coverage.tail(3)
 # ## 6. Evaluation: information coefficients and quintile spreads
 #
 # The IC is the monthly Spearman rank correlation between the factor value at
-# month-end *t* and the return over month *t+1* - the signal is fully
-# observable before the return begins. A |t-stat| above ~2 on the mean IC is
-# the usual bar for "this factor predicts something".
+# month-end *t* and the return over month *t+1*. The signal is fully observable
+# before the return begins.
+#
+# A |t-stat| above roughly 2 on the mean IC is the usual bar for "this factor
+# predicts something".
 
 # %%
 close_piv = pit.pivot(index="ts", columns="symbol", values="close")
@@ -245,9 +286,9 @@ axes[-1].set_xlabel("month end")
 fig.tight_layout()
 
 # %% [markdown]
-# Quintile spreads give the same information in return space: sort into five
+# Quintile spreads give the same information in return space. Sort into five
 # 10-name buckets each month, hold equal-weight for one month, and look at
-# Q5 − Q1.
+# Q5 minus Q1.
 
 # %%
 def quintile_spread(df: pd.DataFrame, field: str) -> pd.Series:
@@ -268,33 +309,35 @@ pd.DataFrame(
 ).round(3)
 
 # %% [markdown]
-# Read the numbers for what they are - this is where synthetic data teaches
-# the most:
+# Read the numbers for what they are. This is where synthetic data teaches the
+# most.
 #
-# - **Momentum** is genuinely positive (IC t ≈ 2.7, double-digit annualized
-#   Q5−Q1 spread): the generator gives each name a persistent drift, so past
-#   winners keep winning. The pipeline detects a real effect.
-# - **Value** is a null, correctly: the cross-sectional B/P ranking is
-#   dominated by each name's static book/shares draw, which carries no
-#   information about future returns.
-# - **Quality** is the trap. Its mean IC has |t| ≈ 3 - yet the factor is
-#   built from *pure noise* (every name has identical revenue-growth vol by
-#   construction). The trailing 4-quarter window means this month's factor is
-#   nearly identical to last month's, so the ~18 monthly ICs are one or two
-#   effective observations wearing eighteen hats, and the i.i.d. t-stat is
-#   fiction. Slow-moving signals need overlap-robust inference (Newey-West,
-#   non-overlapping windows) before you believe any t-stat.
+# - **Momentum** is genuinely positive, with an IC t of about 2.7 and a
+#   double-digit annualized Q5−Q1 spread. The generator gives each name a
+#   persistent drift, so past winners keep winning, and the pipeline detects a
+#   real effect.
+# - **Value** is correctly a null. The cross-sectional B/P ranking is dominated
+#   by each name's static book and shares draw, which carries no information
+#   about future returns.
+# - **Quality** is the trap. Its mean IC has a |t| of about 3, yet the factor is
+#   built from *pure noise*, since every name has identical revenue-growth vol
+#   by construction. The trailing 4-quarter window makes this month's factor
+#   nearly identical to last month's, so the roughly 18 monthly ICs are one or
+#   two effective observations wearing eighteen hats, and the i.i.d. t-stat is
+#   fiction. Slow-moving signals need overlap-robust inference, whether
+#   Newey-West or non-overlapping windows, before you believe any t-stat.
 #
-# The combo inherits the noise it averages in. On ~20-30 months, none of this
-# would clear a research bar on real data - the pipeline, not the alphas, is
-# the deliverable.
+# The combo inherits the noise it averages in. On 20 to 30 months, none of this
+# would clear a research bar on real data. The pipeline, not the alphas, is the
+# deliverable.
 #
-# ## 7. Persist the panel - the factor library pattern
+# ## 7. Persist the panel: the factor library pattern
 #
-# The finished panel (raw factors + z-scores) becomes a `factor_panel` table,
-# and the snapshot names the state of *every* table that produced it. Rebuild
-# the library next month and you get a new version to diff; pin a paper or a
-# production model to the snapshot it was trained on.
+# The finished panel, raw factors plus z-scores, becomes a `factor_panel` table.
+# The snapshot names the state of *every* table that produced it.
+#
+# Rebuild the library next month and you get a new version to diff. Pin a paper
+# or a production model to the snapshot it was trained on.
 
 # %%
 out_cols = ["ts", "symbol", "value", "momentum", "quality", "z_value", "z_momentum", "z_quality", "z_combo"]
@@ -329,18 +372,18 @@ db.snapshot(
 # ## Takeaways
 #
 # - `asof_join` on the **report timestamp** is the whole point-in-time
-#   machinery: every month-end row picks up the latest filing the market had
+#   machinery. Every month-end row picks up the latest filing the market had
 #   actually seen, and `ts_right` documents which one.
-# - Derived data is data: growth/stability signals, the month-end panel and
+# - Derived data is data. Growth and stability signals, the month-end panel and
 #   the final factor library all live as versioned h5i tables, built by SQL
-#   windows (`lag`, `stddev ... OVER ROWS`, `time_bucket('1mo')`).
-# - The evaluation is honest on synthetic data: momentum works (drift is
-#   persistent by construction), value is a null, and quality's "significant"
-#   t-stat is an overlapping-window artifact built from pure noise - the
+#   windows: `lag`, `stddev ... OVER ROWS`, `time_bucket('1mo')`.
+# - The evaluation is honest on synthetic data. Momentum works because drift is
+#   persistent by construction, value is a null, and quality's "significant"
+#   t-stat is an overlapping-window artifact built from pure noise. That is the
 #   cheapest lesson in factor-research inference you will ever get.
 # - One `db.snapshot(...)` pins the *entire* input lineage of a factor build.
 #   "Which fundamentals produced the panel my model trained on?" becomes a
-#   query, not an investigation.
+#   query rather than an investigation.
 
 # %%
 db.close()
