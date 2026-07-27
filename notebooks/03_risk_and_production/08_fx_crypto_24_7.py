@@ -1,19 +1,22 @@
 # %% [markdown]
 # # FX and crypto: 24/7 data without an exchange session
 #
-# Equity tooling leans on the session: the exchange defines "the day", the
-# open, the close. FX and crypto have none of that - EURUSD trades around the
-# clock with a weekend halt, BTC never stops, and "daily close" is a desk
-# *convention* (NY 5pm? Tokyo cut? UTC midnight?). This recipe shows the
-# h5i-db toolkit for that world: `time_bucket` with IANA timezone arguments
-# for session views, rows-based windows for rolling 24h vol, and `gapfill`
-# for regular grids across quiet periods.
+# Equity tooling leans on the session. The exchange defines "the day", the open
+# and the close.
 #
-# **Honesty about the data**: the synthetic tick generator emits uniform
-# arrivals - it has no Tokyo/London/NY liquidity clock and no weekend halt.
-# We model the FX weekend explicitly (removing Fri 21:00 → Sun 21:00 UTC
-# ticks for the FX pairs, keeping BTC trading through it), and we flag below
-# where real data would show structure this data cannot.
+# FX and crypto have none of that. EURUSD trades around the clock with a weekend
+# halt, BTC never stops, and "daily close" is a desk *convention*: NY 5pm, the
+# Tokyo cut, UTC midnight.
+#
+# This recipe shows the toolkit for that world: `time_bucket` with IANA timezone
+# arguments for session views, rows-based windows for rolling 24h vol, and
+# `gapfill` for regular grids across quiet periods.
+#
+# **Honesty about the data.** The synthetic tick generator emits uniform
+# arrivals, with no Tokyo/London/NY liquidity clock and no weekend halt. We
+# model the FX weekend explicitly, removing Fri 21:00 to Sun 21:00 UTC ticks for
+# the FX pairs while keeping BTC trading through it. Below we flag where real
+# data would show structure this data cannot.
 
 # %%
 import matplotlib.pyplot as plt
@@ -27,9 +30,31 @@ import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("prod_fx"), create=True)
 
-# 96 hours starting Friday 2026-06-05 00:00 UTC -> covers a full weekend.
-raw = cu.make_fx_ticks(pairs=["EURUSD", "USDJPY", "BTCUSD"], hours=96, start="2026-06-05").to_pandas()
+# %% [markdown]
+# ## 1. The data
+#
+# `cu.make_fx_ticks` gives 24/7 FX and crypto style ticks, one row per quote
+# update.
+#
+# | column | type | meaning |
+# | --- | --- | --- |
+# | `ts` | `timestamp[us, tz=UTC]` | quote timestamp, ascending |
+# | `pair` | `string` | instrument: `EURUSD`, `USDJPY`, `BTCUSD` |
+# | `bid`, `ask` | `float64` | best bid and offer |
+#
+# We take 96 hours starting Friday 2026-06-05 00:00 UTC, which covers a full
+# weekend.
 
+# %%
+raw = cu.make_fx_ticks(pairs=["EURUSD", "USDJPY", "BTCUSD"], hours=96, start="2026-06-05").to_pandas()
+print(f"{len(raw):,} rows x {raw.shape[1]} columns")
+raw.head()
+
+# %% [markdown]
+# Then we carve out the FX weekend by hand, since the generator has none. FX
+# pairs lose their Fri 21:00 to Sun 21:00 UTC ticks; BTC keeps trading.
+
+# %%
 wk_open = pd.Timestamp("2026-06-05 21:00", tz="UTC")   # Fri 5pm ET
 wk_close = pd.Timestamp("2026-06-07 21:00", tz="UTC")  # Sun 5pm ET
 is_weekend = (raw["ts"] >= wk_open) & (raw["ts"] < wk_close)
@@ -37,11 +62,11 @@ ticks_df = raw[~(is_weekend & (raw["pair"] != "BTCUSD"))].reset_index(drop=True)
 print(f"{len(raw):,} generated ticks -> {len(ticks_df):,} after removing the FX weekend")
 
 # %% [markdown]
-# ## 1. Store the ticks
+# ## 2. Store the ticks
 #
-# One `ticks` table for all three instruments. The FX weekend now shows up as
-# a hole in the per-day counts - while BTC prints straight through it, which
-# is exactly the asymmetry a multi-asset book has to live with.
+# One `ticks` table for all three instruments. The FX weekend now shows up as a
+# hole in the per-day counts, while BTC prints straight through it. That is
+# exactly the asymmetry a multi-asset book has to live with.
 
 # %%
 schema = pa.schema(
@@ -67,14 +92,17 @@ MID = (col("bid") + col("ask")) / 2
 ).pivot(index="day_utc", columns="pair", values="ticks")
 
 # %% [markdown]
-# ## 2. What is "a day"? Three answers from the same ticks
+# ## 3. What is "a day"? Three answers from the same ticks
 #
 # `time_bucket('1d', ts, tz)` aligns day boundaries to *local midnight* in any
-# IANA timezone - DST handled for you. The same tick stream yields different
-# daily closes under UTC, Tokyo, and New York conventions, because each cuts
-# the 24/7 flow at a different instant. (The common FX "NY 5pm" cut is local
-# 17:00 rather than midnight - `time_bucket`'s optional origin argument can
-# shift the boundary if you need that exact convention.)
+# IANA timezone, with DST handled for you.
+#
+# The same tick stream yields different daily closes under UTC, Tokyo and New
+# York conventions, because each cuts the 24/7 flow at a different instant.
+#
+# The common FX "NY 5pm" cut is local 17:00 rather than midnight.
+# `time_bucket`'s optional origin argument can shift the boundary if you need
+# that exact convention.
 
 # %%
 def daily_close(timezone, label: str) -> pd.DataFrame:
@@ -96,21 +124,26 @@ ny = daily_close("America/New_York", "close_ny")
 pd.concat([utc, tokyo, ny], axis=1).round(5)
 
 # %% [markdown]
-# Each convention's day starts at a different UTC instant (00:00, 15:00 -
-# Tokyo midnight, 04:00 - NY midnight EDT), so the "same day" close differs
-# across columns. On a real desk this is not pedantry: daily P&L, VaR windows
-# and carry accrual all inherit whichever cut you pick.
+# Each convention's day starts at a different UTC instant: 00:00 for UTC, 15:00
+# for Tokyo midnight, 04:00 for NY midnight in EDT. So the "same day" close
+# differs across columns.
 #
-# ## 3. Hourly bars, stored - then rolling 24h realized vol
+# On a real desk this is not pedantry. Daily P&L, VaR windows and carry accrual
+# all inherit whichever cut you pick.
 #
-# We persist hourly mid bars to their own table: derived tables are cheap in
-# h5i-db (one commit), and downstream queries - rolling windows, gapfill -
-# want a *stored* regular series to operate on. The rolling 24h vol is a
-# rows-based window (`ROWS BETWEEN 23 PRECEDING`), the natural frame on 24/7
-# data where every hour exists. One caveat from our FX weekend: missing hours
-# simply aren't rows, so the window silently spans the gap - Monday's first
-# bars mix Friday hours into "the last 24h". A regular grid (section 5) is
-# the fix when that matters.
+# ## 4. Hourly bars, stored, then rolling 24h realized vol
+#
+# We persist hourly mid bars to their own table. Derived tables are cheap here,
+# one commit each, and downstream queries such as rolling windows and gapfill
+# want a *stored* regular series to operate on.
+#
+# The rolling 24h vol is a rows-based window, `ROWS BETWEEN 23 PRECEDING`. That
+# is the natural frame on 24/7 data where every hour exists.
+#
+# One caveat comes from our FX weekend. Missing hours simply are not rows, so
+# the window silently spans the gap, and Monday's first bars mix Friday hours
+# into "the last 24h". A regular grid, in section 6, is the fix when that
+# matters.
 
 # %%
 bars = (
@@ -157,15 +190,17 @@ ax.legend(fontsize=8)
 fig.tight_layout()
 
 # %% [markdown]
-# ## 4. The liquidity clock - method on synthetic, structure on real data
+# ## 5. The liquidity clock: method on synthetic, structure on real data
 #
-# The 24/7 week still has rhythm: Tokyo morning, the London/NY overlap
-# (roughly 12:00–16:00 UTC) where FX spreads are tightest, the post-NY lull.
-# The query is a bucket-by-hour-of-day over ticks and spreads; converting the
-# hour to a trading center's local time is a pandas `tz_convert` away.
-# **Expect the lines below to be flat**: uniform synthetic arrivals have no
+# The 24/7 week still has rhythm. Tokyo morning, the London/NY overlap around
+# 12:00 to 16:00 UTC where FX spreads are tightest, then the post-NY lull.
+#
+# The query is a bucket-by-hour-of-day over ticks and spreads, and converting
+# the hour to a trading center's local time is a pandas `tz_convert` away.
+#
+# **Expect the lines below to be flat.** Uniform synthetic arrivals have no
 # clock. On real feed data this exact query draws the U-shapes and overlap
-# humps - the method, not this picture, is the takeaway.
+# humps. The method, not this picture, is the takeaway.
 
 # %%
 clock = (
@@ -188,22 +223,23 @@ ax.legend(fontsize=8)
 fig.tight_layout()
 
 # %% [markdown]
-# ## 5. Regular grids with `gapfill` - and the phantom-return trap
+# ## 6. Regular grids with `gapfill`, and the phantom-return trap
 #
-# `gapfill(table, time_col, step, mode)` samples a *stored* table onto a
-# regular grid. Two things to internalize:
+# `gapfill(table, time_col, step, mode)` samples a *stored* table onto a regular
+# grid. A few things are worth internalizing.
 #
-# - **step is in raw time units** - microseconds for `timestamp[us]` columns:
-#   `1_000_000` is a 1-second grid, `60_000_000` one minute. Generated grids
-#   are capped at 1M rows, so pick the step to fit the span.
+# - **The step is in raw time units**, meaning microseconds for
+#   `timestamp[us]` columns. `1_000_000` is a 1-second grid and `60_000_000` one
+#   minute. Generated grids are capped at 1M rows, so pick the step to fit the
+#   span.
 # - gapfill is a plain grid sampler with **no per-key grouping**: on a
 #   multi-instrument table, `locf` would carry *whichever pair last ticked*
-#   forward. Always gapfill a single-series table - so we store the EURUSD
-#   ticks on their own first.
-# - the `'null'` mode only emits a value where an observation coincides with
-#   a grid instant - on irregular ticks that is essentially never, so use
-#   `'locf'` (or `'interpolate'`) for sampling, and plain `time_bucket` bars
-#   when you want "only minutes that actually traded".
+#   forward. Always gapfill a single-series table, so we store the EURUSD ticks
+#   on their own first.
+# - The `'null'` mode only emits a value where an observation coincides with a
+#   grid instant, which on irregular ticks is essentially never. Use `'locf'` or
+#   `'interpolate'` for sampling, and plain `time_bucket` bars when you want
+#   "only minutes that actually traded".
 
 # %%
 eur = ticks_df[ticks_df["pair"] == "EURUSD"]
@@ -242,7 +278,7 @@ ax.legend(fontsize=8)
 fig.tight_layout()
 
 # %% [markdown]
-# The dashed segment is a *fabricated* flat line - that is what `locf` means.
+# The dashed segment is a *fabricated* flat line. That is what `locf` means.
 # It is the right choice for marking a book (the last quote **is** your best
 # knowledge), and the wrong input for return statistics: 2,880 zero returns
 # depress measured vol, and the whole weekend move lands as a single fake
@@ -265,26 +301,26 @@ pd.DataFrame(
 
 # %% [markdown]
 # The zero-return padding knocks a third off measured vol, and the weekend
-# gap is compressed into one synthetic minute. The traded-minutes series -
-# plain `time_bucket` bars, which only exist where ticks exist - is the
-# honest input for vol estimation.
+# gap is compressed into one synthetic minute. The traded-minutes series, plain
+# `time_bucket` bars that only exist where ticks exist, is the honest input for
+# vol estimation.
 #
 # ## Takeaways
 #
 # - On 24/7 data "the day" is a parameter, not a fact: `time_bucket('1d', ts,
-#   '<IANA tz>')` gives session-aligned days for any convention, DST included -
-#   same ticks, different daily closes.
+#   '<IANA tz>')` gives session-aligned days for any convention, DST included.
+#   Same ticks, different daily closes.
 # - Rows-based windows (`ROWS BETWEEN 23 PRECEDING`) are the natural rolling
-#   frame on continuous data, but they span data *gaps* silently - know your
+#   frame on continuous data, but they span data *gaps* silently. Know your
 #   halts.
 # - `gapfill` needs a stored, single-series table; its step is raw
 #   microseconds (`1_000_000` = 1s) with a 1M-row grid cap.
 # - `locf` is for marking, traded-minute bars are for measuring: carrying
 #   quotes across a halt fabricates zero returns (vol biased down) plus one
 #   phantom gap print (tails biased up).
-# - Synthetic ticks have no liquidity clock - the hour-of-day queries here are
-#   the method to run on your real feed, where Tokyo/London/NY structure will
-#   actually appear.
+# - Synthetic ticks have no liquidity clock. The hour-of-day queries here are
+#   the method to run on your real feed, where Tokyo, London and NY structure
+#   will actually appear.
 
 # %%
 db.close()

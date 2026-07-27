@@ -1,21 +1,24 @@
 # %% [markdown]
 # # Leakage checks: which of last night's backtests actually held up?
 #
-# A research agent - or a parameter sweep, or a junior with a for-loop - runs
-# forty backtests overnight. In the morning there are forty Sharpes. Reviewing
-# them properly means re-deriving each one against the data as it stood at the
-# decision instant, and nobody does that forty times, so in practice the top of
-# the list gets promoted and the rest get deleted. That is exactly the selection
-# procedure that promotes leaks.
+# A research agent runs forty backtests overnight. So does a parameter sweep, or
+# a junior with a for-loop. In the morning there are forty Sharpes.
 #
-# `arrival_delta` turns that review into a number. It runs one query twice -
-# against the current head, and against a decision read point - and reports the
-# delta. The part of a metric that moves is the part that depended on data which
-# had not arrived when the trade would have been placed: the alpha that
+# Reviewing them properly means re-deriving each one against the data as it
+# stood at the decision instant. Nobody does that forty times, so in practice
+# the top of the list gets promoted and the rest get deleted. That is exactly
+# the selection procedure that promotes leaks.
+#
+# `arrival_delta` turns that review into a number. It runs one query twice,
+# against the current head and against a decision read point, and reports the
+# delta.
+#
+# The part of a metric that moves is the part that depended on data which had
+# not arrived when the trade would have been placed. It is the alpha that
 # evaporates in production.
 #
 # This recipe measures a real one, then spends equal time on the two ways the
-# check can mislead you - a *vacuous* result, and an event-time leak it is blind
+# check can mislead you: a *vacuous* result, and an event-time leak it is blind
 # to by construction. A diagnostic you trust incorrectly is worse than none.
 
 # %%
@@ -31,17 +34,35 @@ db = h5i_db.Database(cu.fresh_db("prod_leakage"), create=True)
 rng = np.random.default_rng(11)
 
 # %% [markdown]
-# ## 1. A panel with an arrival history
+# ## 1. The data
 #
-# The point of the exercise depends on the database being a record of *when
-# things arrived*, not just of what they say now. So we load the vendor's first
-# publication, then let corrections land later as their own commits - which is
-# what a vendor feed actually looks like once you keep the history.
+# `cu.make_daily_prices` gives a daily OHLCV panel: 60 synthetic names over 500
+# sessions, one row per symbol per session.
+#
+# | column | type | meaning |
+# | --- | --- | --- |
+# | `ts` | `timestamp[us, tz=UTC]` | session close, 20:00 UTC |
+# | `symbol` | `string` | ticker, `STK000` … `STK059` |
+# | `open`, `high`, `low`, `close` | `float64` | session prices |
+# | `volume` | `int64` | shares traded |
 
 # %%
 symbols = [f"STK{i:03d}" for i in range(60)]
 panel = cu.make_daily_prices(symbols=symbols, days=500)
+print(f"{panel.num_rows:,} rows x {panel.num_columns} columns, {len(symbols)} symbols")
+panel.to_pandas().head()
 
+# %% [markdown]
+# ## 2. A panel with an arrival history
+#
+# The exercise depends on the database being a record of *when things arrived*,
+# not just of what they say now.
+#
+# So we load the vendor's first publication, then let corrections land later as
+# their own commits. That is what a vendor feed actually looks like once you
+# keep the history.
+
+# %%
 schema = pa.schema(
     [
         pa.field("ts", pa.timestamp("us", tz="UTC"), nullable=False),
@@ -61,13 +82,14 @@ pdf = first_publication.to_pandas()
 print(f"{len(pdf):,} rows, {pdf.ts.min().date()} .. {pdf.ts.max().date()}, version 1")
 
 # %% [markdown]
-# ## 2. The corrections arrive
+# ## 3. The corrections arrive
 #
 # Three restatements, each a separate commit: a fat-finger print, a missed
-# split, and a late adjustment. Because a range replacement rewrites the whole
-# window, the replacement frame has to carry the innocent rows of that day
-# through unchanged - the helper below reads the window, patches it, and hands
-# the full window back.
+# split, and a late adjustment.
+#
+# A range replacement rewrites the whole window, so the replacement frame has to
+# carry the innocent rows of that day through unchanged. The helper below reads
+# the window, patches it, and hands the full window back.
 
 # %%
 def restate(day: pd.Timestamp, symbol: str, factor: float, note: str) -> int:
@@ -99,17 +121,18 @@ for v in db.versions("prices"):
     print(f"  v{v['sequence']:>2} {v['op']:<13} {v.get('note', '')}")
 
 # %% [markdown]
-# ## 3. The metric, written once, as a single query
+# ## 4. The metric, written once, as a single query
 #
 # `arrival_delta` re-runs a *query*, so the whole strategy has to be expressible
-# as one. That constraint is a feature: a metric you can hand to the database is
+# as one. That constraint is a feature. A metric you can hand to the database is
 # a metric you can hand to any read point, including a past one.
 #
-# Below is a plain cross-sectional momentum book - 21-day momentum, demeaned
-# each day, weighted by conviction, held one day. The signal deliberately uses
-# `prev`, the close *before* the return being earned, so the strategy itself
-# contains no look-ahead. Everything we are about to measure comes from the
-# data moving, not from the code cheating.
+# Below is a plain cross-sectional momentum book: 21-day momentum, demeaned each
+# day, weighted by conviction, held one day.
+#
+# The signal deliberately uses `prev`, the close *before* the return being
+# earned, so the strategy itself contains no look-ahead. Everything we are about
+# to measure comes from the data moving, not from the code cheating.
 
 # %%
 # arrival_delta() takes a SQL string (it re-runs the same text at two read
@@ -148,9 +171,9 @@ print("head Sharpe:", round(head_sharpe, 3))
 # data's history rather than of the strategy.
 
 # %% [markdown]
-# ## 4. The check itself
+# ## 5. The check itself
 #
-# The decision point is version 1 - the state of the world when the research was
+# The decision point is version 1: the state of the world when the research was
 # done, before any correction had arrived. Everything after it is hindsight.
 
 # %%
@@ -167,28 +190,31 @@ for w in report["withheld_versions"]:
     print(f"  {w['table']}: v{w['asof_version']} -> v{w['head_version']}")
 
 # %% [markdown]
-# Read the *absolute* delta, in the metric's own units: this book's Sharpe moved
-# by about half a point between what could be known and what is known now. The
-# report also carries `delta_pct`, but a ratio metric sitting near zero makes
-# that percentage explode - a Sharpe that goes from -0.36 to -0.85 is "-133%",
-# which is arithmetically true and useless. Percentages are for metrics with a
-# meaningful base; use the raw delta for the rest.
+# Read the *absolute* delta, in the metric's own units. This book's Sharpe moved
+# by about half a point between what could be known and what is known now.
 #
-# It is not a verdict that the strategy is broken. The restatements are genuine
-# improvements to the data, and the corrected Sharpe is the more honest one.
-# What the delta says is: *this much of the result was not knowable at decision
-# time*, so a live run starting that day would not have traded this book. Use it
-# as a haircut, and as a ranking key when you have forty of these and time to
-# examine three.
+# The report also carries `delta_pct`, but a ratio metric sitting near zero
+# makes that percentage explode. A Sharpe that goes from -0.36 to -0.85 is
+# "-133%", which is arithmetically true and useless. Percentages are for metrics
+# with a meaningful base; use the raw delta for the rest.
+#
+# This is not a verdict that the strategy is broken. The restatements are
+# genuine improvements to the data, and the corrected Sharpe is the more honest
+# one.
+#
+# What the delta says is that *this much of the result was not knowable at
+# decision time*, so a live run starting that day would not have traded this
+# book. Use it as a haircut, and as a ranking key when you have forty of these
+# and time to examine three.
 
 # %%
 print("\n".join(report["notes"]))
 
 # %% [markdown]
-# ## 5. Triage across a sweep
+# ## 6. Triage across a sweep
 #
-# Which is the actual workflow. Run the same check across every variant that
-# came out of the overnight sweep and sort by exposure, not by Sharpe.
+# This is the actual workflow. Run the same check across every variant that came
+# out of the overnight sweep, and sort by exposure rather than by Sharpe.
 
 # %%
 def with_lookback(n: int) -> str:
@@ -220,7 +246,7 @@ print(triage.round(3).to_string(index=False))
 
 # %% [markdown]
 # A gate follows directly: promote nothing whose reported edge survives only
-# with hindsight. The threshold is a house parameter; the discipline is that it
+# with hindsight. The threshold is a house parameter. The discipline is that it
 # exists and is computed rather than eyeballed.
 
 # %%
@@ -234,16 +260,20 @@ if promoted.empty:
     print("  (none survive: a single missed split moves every variant in this book)")
 
 # %% [markdown]
-# ## 6. Failure mode 1: a zero that means nothing
+# ## 7. Failure mode 1: a zero that means nothing
 #
 # Here is the part that decides whether this diagnostic helps you or lulls you.
-# `arrival_delta` compares two read points. If both resolve to the same version
-# - which is the case for any database loaded in a single bulk ingest, the
-# normal cold start - then it compares identical data and the delta is *forced*
-# to zero. It has measured nothing, and a zero that means nothing looks exactly
-# like a clean bill of health.
 #
-# The report says so, in `vacuous`. Check that field before you read the number.
+# `arrival_delta` compares two read points. If both resolve to the same version,
+# it compares identical data and the delta is *forced* to zero. That is the case
+# for any database loaded in a single bulk ingest, which is the normal cold
+# start.
+#
+# It has measured nothing, and a zero that means nothing looks exactly like a
+# clean bill of health.
+#
+# The report says so, in `vacuous`. Check that field before you read the
+# number.
 
 # %%
 bulk = h5i_db.Database(cu.fresh_db("prod_leakage_bulk"), create=True)
@@ -259,14 +289,16 @@ print(bulk_report["notes"][0])
 bulk.close()
 
 # %% [markdown]
-# ## 7. Failure mode 2: the leak it cannot see
+# ## 8. Failure mode 2: the leak it cannot see
 #
 # `arrival_delta` measures the *arrival* axis: rows that exist now but had not
-# been published yet. It is blind to the other axis - rows that were always in
-# the table, read at a moment you should not have been reading them.
+# been published yet.
+#
+# It is blind to the other axis, which is rows that were always in the table,
+# read at a moment you should not have been reading them.
 #
 # The classic version is a signal that uses the same day's close to trade that
-# same day's close. Below, `mom` is built from `close` instead of `prev`, which
+# same day's close. Below, `mom` is built from `close` rather than `prev`, which
 # makes the strategy trade on information it earns simultaneously. The Sharpe is
 # absurd, the leak is total, and the check reports essentially nothing.
 
@@ -283,22 +315,25 @@ print(f"arrival delta           : {lc['delta']:+.2f} Sharpe")
 print(f"vacuous                 : {leaky_report['vacuous']}")
 
 # %% [markdown]
-# Note what the check did and did not tell you. It reports a real arrival delta
-# for this query, because the restatements move the leaky signal too - but that
-# delta is measuring the restatements, not the peeking. Nothing in the report
-# separates a signal that reads its own bar from one that does not, because
-# that is not what it measures. Whatever the delta comes out to, large or
-# small, it is not a verdict on look-ahead, which is what the report's own
-# `notes` say on every run.
+# Note what the check did and did not tell you.
+#
+# It reports a real arrival delta for this query, because the restatements move
+# the leaky signal too. But that delta is measuring the restatements, not the
+# peeking. Nothing in the report separates a signal that reads its own bar from
+# one that does not, because that is not what it measures.
+#
+# Whatever the delta comes out to, large or small, it is not a verdict on
+# look-ahead. The report's own `notes` say so on every run.
 #
 # The event-time axis needs a different tool: a cutoff applied to the scan
 # itself.
 #
-# In SQL you can write the bound by hand. Each step of a walk-forward
-# evaluation is exactly this: decide at T, seeing only rows stamped at or
-# before T. The check below is deliberately a row count rather than another
-# Sharpe - comparing Sharpes across the bound would conflate the cutoff with
-# the shorter sample it produces, which is its own way of lying with numbers.
+# In SQL you can write the bound by hand. Each step of a walk-forward evaluation
+# is exactly this: decide at T, seeing only rows stamped at or before T.
+#
+# The check below is deliberately a row count rather than another Sharpe.
+# Comparing Sharpes across the bound would conflate the cutoff with the shorter
+# sample it produces, which is its own way of lying with numbers.
 
 # %%
 decision = days[-60]
@@ -312,14 +347,14 @@ print(f"future rows hidden: {total - visible:,}")
 
 # %% [markdown]
 # The trouble with writing that bound by hand is that you have to remember it
-# every single time, in every subquery of every variant, forever - and a leaked
+# every single time, in every subquery of every variant, forever. And a leaked
 # backtest looks like a good one, so the day you forget is the day you get
 # promoted.
 
 # %% [markdown]
-# The CLI makes that bound structural instead of remembered - the session is
-# pinned and *no* query inside it can reach past the instant, including one that
-# explicitly asks:
+# The CLI makes that bound structural instead of remembered. The session is
+# pinned, and *no* query inside it can reach past the instant, including one
+# that explicitly asks.
 #
 # ```bash
 # h5i-db query prod_leakage.db "<the same SQL>" \
@@ -327,32 +362,32 @@ print(f"future rows hidden: {total - visible:,}")
 #   --embargo 1d
 # ```
 #
-# Use both: the cutoff to stop event-time leaks happening, `arrival_delta` to
-# measure the arrival leaks that no cutoff can prevent, because they are caused
-# by the world learning something after you did.
+# Use both. The cutoff stops event-time leaks from happening, and
+# `arrival_delta` measures the arrival leaks no cutoff can prevent, because they
+# are caused by the world learning something after you did.
 
 # %% [markdown]
 # ## Takeaways
 #
-# - **`arrival_delta` prices hindsight.** One query, two read points; the delta
-#   is how much of a result was not knowable at decision time. Read it in the
-#   metric's own units and rank a sweep by it rather than by Sharpe -
-#   `delta_pct` explodes on any metric whose base sits near zero, which a
-#   Sharpe does.
+# - **`arrival_delta` prices hindsight.** One query, two read points, and the
+#   delta is how much of a result was not knowable at decision time. Read it in
+#   the metric's own units and rank a sweep by it rather than by Sharpe.
+#   `delta_pct` explodes on any metric whose base sits near zero, which a Sharpe
+#   does.
 # - **Read `vacuous` before you read the number.** A single-commit database
 #   makes the check compare identical data, and its zero is arithmetic rather
 #   than evidence. This is the normal state of a freshly bulk-loaded store.
-# - **It only sees the arrival axis.** A same-bar look-ahead is invisible to
-#   it: the delta it reports for a peeking signal is measuring restatements,
-#   not the peeking, so no value of that delta clears a signal of look-ahead.
-#   The report's `notes` say so on every run; believe them.
+# - **It only sees the arrival axis.** A same-bar look-ahead is invisible to it.
+#   The delta it reports for a peeking signal is measuring restatements, not the
+#   peeking, so no value of that delta clears a signal of look-ahead. The
+#   report's `notes` say so on every run, and you should believe them.
 # - **One restated split can outweigh a whole book.** A single corrected symbol
 #   moved every variant here by more than 0.4 Sharpe. Corporate actions are not
 #   a rounding error in the arrival history; they are usually the whole story.
 # - **The two tools are complementary, not alternatives.** `--decision-time`
-#   prevents event-time leaks structurally; `arrival_delta` measures arrival
+#   prevents event-time leaks structurally. `arrival_delta` measures arrival
 #   leaks, which are caused by the data changing and so cannot be prevented at
-#   all - only quantified.
+#   all, only quantified.
 # - **h5i-db features doing the work:** immutable per-commit versioning (the
 #   arrival history that makes the question answerable), O(1) time travel (both
 #   runs are cheap), and previewable `plan_replace_range` (the restatements are
