@@ -23,6 +23,7 @@ import pyarrow as pa
 import matplotlib.pyplot as plt
 
 import h5i_db
+from h5i_db import col, count_star, lit, time_bucket, vwap
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("mde_ohlcv"), create=True)
@@ -56,39 +57,53 @@ db.append("trades", trades, note="week of ticks")["rows_total"]
 # %% [markdown]
 # ## 2. 好きな幅のバー
 #
-# バーの幅ごとに1文です。押さえるべき書き方は3つあります。
+# バーのロールアップは幅の関数1つです。だから1度だけ組み立てて、あとは呼ぶだけで済みます。
+# クエリが Python の値として持ち回せることの見返りがこれです。押さえるべき書き方は
+# 3つあります。
 #
 # - `time_bucket('<width>', ts)` が各ティックを自分のバケットへ切り下げます。幅は `'1m'`、
 #   `'5m'`、`'1h'` など（`'1d'`、`'1mo'` なども使えます）。
-# - `GROUP BY` の中の `first_value(price ORDER BY ts)` と `last_value(price ORDER BY ts)` が、
+# - `.first("ts")` と `.last("ts")` は `first_value(price ORDER BY ts)` とその対です。
 #   行の並び順というたまたまの結果に左右されず、*イベント時刻*で始値と終値を返します。
 #   自己結合は不要です。
 # - `vwap(price, size)` はネイティブの集約関数です。
+#
+# 覚えておきたい命名の決まりが1つあります。計算したグループキーに、すでに存在する列と同じ
+# 名前を付けてはいけません。`GROUP BY "ts"` はバケットではなく生の `ts` 列に結び付き、
+# ティック1件ごとに1グループという結果を、エラーも出さずに返します。バケットは `bar` に
+# しておき、名前が空いている1段下の `select` で改名します。
 
 # %%
-def bar_query(width: str) -> str:
-    return f"""
-        SELECT time_bucket('{width}', ts) AS ts,
-               symbol,
-               first_value(price ORDER BY ts) AS open,
-               max(price)                     AS high,
-               min(price)                     AS low,
-               last_value(price ORDER BY ts)  AS close,
-               sum(size)                      AS volume,
-               vwap(price, size)              AS vwap,
-               count(*)                       AS n_trades
-        FROM trades
-        GROUP BY 1, 2
-        ORDER BY 1, 2
-    """
+def bars(width: str):
+    return (
+        db.table("trades")
+        .group_by(time_bucket(width, col("ts")).alias("bar"), "symbol")
+        .agg(
+            open=col("price").first("ts"),
+            high=col("price").max(),
+            low=col("price").min(),
+            close=col("price").last("ts"),
+            volume=col("size").sum(),
+            vwap=vwap(col("price"), col("size")),
+            n_trades=count_star(),
+        )
+        .select(
+            col("bar").alias("ts"),
+            "symbol", "open", "high", "low", "close", "volume", "vwap", "n_trades",
+        )
+    )
 
 
-bars_5m = db.sql(bar_query("5m")).to_pandas()
+bars_5m = bars("5m").sort(["ts", "symbol"]).to_pandas()
 bars_5m.head(6)
+
+# %% [markdown]
+# 幅ごとのバー本数を数えるのも、同じフレームを伸ばすだけです。集約が1段を閉じるので、その上に
+# 載せた `count(*)` は文字列をいじらずにサブクエリとして入れ子になります。
 
 # %%
 for width in ("1m", "5m", "1h"):
-    n = db.sql(f"SELECT count(*) AS n FROM ({bar_query(width)})").to_pandas()["n"][0]
+    n = bars(width).select(count_star().alias("n")).to_pandas()["n"][0]
     print(f"{width:>3} bars: {n:,}")
 
 # %% [markdown]
@@ -102,16 +117,16 @@ for width in ("1m", "5m", "1h"):
 # 固定 UTC オフセットは1時間ずれてしまうのに対し、ニューヨーク版は正しいままです。
 
 # %%
-db.sql(
-    """
-    SELECT time_bucket('1d', ts)                     AS day_utc,
-           time_bucket('1d', ts, 'America/New_York') AS day_new_york,
-           count(*)                                  AS n_trades
-    FROM trades
-    GROUP BY 1, 2
-    ORDER BY 1
-    """
-).to_pandas()
+(
+    db.table("trades")
+    .group_by(
+        time_bucket("1d", col("ts")).alias("day_utc"),
+        time_bucket("1d", col("ts"), timezone="America/New_York").alias("day_new_york"),
+    )
+    .agg(n_trades=count_star())
+    .sort("day_utc")
+    .to_pandas()
+)
 
 # %% [markdown]
 # バケットの選び方がラベルだけでなく*数字*まで変えるのは、UTC の深夜をまたぐセッション、
@@ -153,16 +168,18 @@ db.create_table("fut_trades", fut_schema, time_column="ts", sort_key=["ts"])
 db.append("fut_trades", fut.cast(fut_schema))
 
 schemes = {
-    "UTC day": "time_bucket('1d', ts)",
-    "New York day": "time_bucket('1d', ts, 'America/New_York')",
-    "session day": "time_bucket('1d', ts, '2026-06-01T22:00:00Z')",
+    "UTC day": time_bucket("1d", col("ts")),
+    "New York day": time_bucket("1d", col("ts"), timezone="America/New_York"),
+    "session day": time_bucket("1d", col("ts"), origin="2026-06-01T22:00:00Z"),
 }
 pd.concat(
-    db.sql(
-        f"SELECT '{label}' AS scheme, {expr} AS bar_start, count(*) AS n_trades "
-        "FROM fut_trades GROUP BY 1, 2 ORDER BY 2"
-    ).to_pandas()
-    for label, expr in schemes.items()
+    db.table("fut_trades")
+    .group_by(bucket.alias("bar_start"))
+    .agg(n_trades=count_star())
+    .select(scheme=lit(label), bar_start=col("bar_start"), n_trades=col("n_trades"))
+    .sort("bar_start")
+    .to_pandas()
+    for label, bucket in schemes.items()
 ).reset_index(drop=True)
 
 # %% [markdown]
@@ -192,7 +209,7 @@ bar_schema = pa.schema(
 )
 db.create_table("bars_5m", bar_schema, time_column="ts", sort_key=["ts", "symbol"])
 commit = db.write(
-    "bars_5m", db.sql(bar_query("5m")).to_arrow().cast(bar_schema),
+    "bars_5m", bars("5m").sort(["ts", "symbol"]).to_arrow().cast(bar_schema),
     note="5m bars built from trades v1",
 )
 {k: commit[k] for k in ("table", "sequence", "op", "rows_total")}
@@ -204,14 +221,16 @@ commit = db.write(
 # 高値・安値のレンジをバンドとして重ねます。
 
 # %%
-one_day = db.sql(
-    """
-    SELECT ts, high, low, close, vwap
-    FROM bars_5m
-    WHERE symbol = 'AAPL' AND time_bucket('1d', ts) = '2026-06-02T00:00:00Z'
-    ORDER BY ts
-    """
-).to_pandas()
+one_day = (
+    db.table("bars_5m")
+    .filter(
+        col("symbol") == "AAPL",
+        time_bucket("1d", col("ts")) == "2026-06-02T00:00:00Z",
+    )
+    .select("ts", "high", "low", "close", "vwap")
+    .sort("ts")
+    .to_pandas()
+)
 
 fig, ax = plt.subplots(figsize=(10, 4))
 ax.fill_between(one_day["ts"], one_day["low"], one_day["high"],
@@ -249,21 +268,23 @@ ref = (
 )
 ref["vwap"] = ref["pv"] / ref["volume"]
 
-stored = db.sql("SELECT * FROM bars_5m ORDER BY symbol, ts").to_pandas()
+stored = db.table("bars_5m").sort(["symbol", "ts"]).to_pandas()
 merged = stored.merge(ref, on=["symbol", "ts"], suffixes=("", "_ref"))
 assert len(merged) == len(stored) == len(ref)
-for col in ("open", "high", "low", "close", "volume", "vwap", "n_trades"):
-    assert np.allclose(merged[col], merged[f"{col}_ref"]), col
+for field in ("open", "high", "low", "close", "volume", "vwap", "n_trades"):
+    assert np.allclose(merged[field], merged[f"{field}_ref"]), field
 print(f"all {len(merged):,} bars match pandas across OHLC, volume, VWAP, count")
 
 # %% [markdown]
 # ## まとめ
 #
-# - ティックから OHLCV＋VWAP のバーまでは SQL 1文です。`time_bucket` と
-#   `first_value/last_value(... ORDER BY ts)` と `vwap` が時刻順ストレージの上を
-#   ストリーミングで流れ、結果は pandas の参照実装とぴたり一致します。
-# - `time_bucket` の3つ目の引数がセッションの揃えを担当します。夏時間に強い暦日には IANA の
-#   タイムゾーン、深夜をまたぐ夜間セッションには起点タイムスタンプを渡します。素朴な UTC 日は
+# - ティックから OHLCV＋VWAP のバーまでは集約1つです。`time_bucket` と `.first("ts")`
+#   `.last("ts")` と `vwap` が時刻順ストレージの上をストリーミングで流れ、結果は pandas の
+#   参照実装とぴたり一致します。
+# - SQL のテンプレートではなく `bars(width)` という関数として書いたので、どの幅のバーも、
+#   その上に載せる本数のカウントも、たった1つの定義から出てきます。
+# - `time_bucket` の3つ目の引数がセッションの揃えを担当します。夏時間に強い暦日には
+#   `timezone=`、深夜をまたぐ夜間セッションには `origin=` を渡します。素朴な UTC 日は
 #   Globex 型のセッションを黙って2つに割ります。
 # - 派生したバーはデータベースに置きましょう。`bars_5m` への `db.write` なら、ビルド履歴を
 #   丸ごと残したままアトミックに作り直せます。下流の利用者はどのバーのバージョンから計算したかを

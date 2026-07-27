@@ -22,6 +22,7 @@ import pandas as pd
 import pyarrow as pa
 
 import h5i_db
+from h5i_db import col, sql_expr
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("alpha_rebalance"), create=True)
@@ -52,14 +53,14 @@ db.append(
     note="30 S&P names, 2018-2026, split-adjusted",
 )
 
-mom_df = db.sql(
-    """
-    SELECT ts, symbol, adj_close,
-           lag(adj_close, 21)  OVER w / lag(adj_close, 252) OVER w - 1 AS mom
-    FROM prices
-    WINDOW w AS (PARTITION BY symbol ORDER BY ts)
-    ORDER BY ts, symbol
-    """
+def lag_px(n: int):
+    return sql_expr(f"lag(adj_close, {n})").over(partition_by="symbol", order_by="ts")
+
+
+mom_df = (
+    db.table("prices")
+    .select("ts", "symbol", "adj_close", mom=lag_px(21) / lag_px(252) - 1)
+    .sort(["ts", "symbol"])
 ).to_pandas()
 px = mom_df.pivot(index="ts", columns="symbol", values="adj_close")
 mom = mom_df.pivot(index="ts", columns="symbol", values="mom")
@@ -146,7 +147,7 @@ head = versions[-1]["sequence"]
 
 def book_ts(v):
     """Timestamp of the latest book inside version v of `holdings`."""
-    return db.sql(f"SELECT max(ts) AS m FROM h5i('holdings', {v})").to_pandas()["m"][0]
+    return db.table("holdings", version=v).select(m=col("ts").max()).to_pandas()["m"][0]
 
 # Resolve each version's book timestamp once and inline it as a literal -
 # the resolved read point then appears verbatim in the SQL, which is what
@@ -164,6 +165,9 @@ def book_diff_sql(v_new, v_old, select):
     {select}
     """
 
+# A FULL OUTER JOIN with COALESCE across both sides, over three pinned
+# relations: the builder's binary l/r aliasing would obscure this rather than
+# clarify it, so the diff stays SQL.
 trade_list = db.sql(
     book_diff_sql(
         head,
@@ -297,13 +301,17 @@ fig.tight_layout()
 #   way it is O(1) - no replay, no restore.
 
 # %%
-eoy = db.sql(
-    """
-    SELECT symbol, shares, weight FROM h5i('holdings', 'eoy-2025')
-    WHERE ts = (SELECT max(ts) FROM h5i('holdings', 'eoy-2025'))
-    ORDER BY weight DESC
-    """
-).to_pandas()
+# A scalar subquery has no verb, so resolve the latest book timestamp first
+# and filter against it - one round trip more, and far easier to read.
+eoy_book = db.table("holdings", snapshot="eoy-2025")
+eoy_ts = eoy_book.select(m=col("ts").max()).to_pandas()["m"][0]
+
+eoy = (
+    eoy_book.filter(col("ts") == eoy_ts.isoformat())
+    .select("symbol", "shares", "weight")
+    .sort("weight", descending=True)
+    .to_pandas()
+)
 print("book at snapshot 'eoy-2025' (December 2025 rebalance):")
 print(eoy.round(4).to_string(index=False))
 

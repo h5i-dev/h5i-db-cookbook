@@ -20,6 +20,7 @@ import pandas as pd
 import pyarrow as pa
 
 import h5i_db
+from h5i_db import col, count_star, sql_expr
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("00_timetravel"), create=True)
@@ -92,23 +93,24 @@ db.sql(
 # レシピが主張したいのは、要するにこの習慣です。
 
 # %%
-def backtest_mean_return(read_point: str) -> pd.DataFrame:
-    return db.sql(
-        f"""
-        WITH r AS (
-            SELECT symbol,
-                   close / lag(close) OVER (PARTITION BY symbol ORDER BY ts) - 1 AS ret
-            FROM {read_point}
-        )
-        SELECT symbol, 252 * avg(ret) AS ann_mean_ret
-        FROM r WHERE ret IS NOT NULL
-        GROUP BY symbol ORDER BY symbol
-        """
-    ).to_pandas()
+PREV_CLOSE = sql_expr("lag(close)").over(partition_by="symbol", order_by="ts")
+
+
+def backtest_mean_return(version=None) -> pd.DataFrame:
+    """The same study, parameterized by read point rather than by SQL text."""
+    return (
+        db.table("prices", version=version)
+        .with_columns(ret=col("close") / PREV_CLOSE - 1)
+        .filter(col("ret").is_not_null())
+        .group_by("symbol")
+        .agg(ann_mean_ret=col("ret").mean() * 252)
+        .sort("symbol")
+        .to_pandas()
+    )
 
 
 v_pre = db.versions("prices")[-1]["sequence"]
-result_original = backtest_mean_return("prices")
+result_original = backtest_mean_return()
 print(f"backtest ran against version {v_pre}")
 result_original.head(3)
 
@@ -129,22 +131,26 @@ v_post = commit["sequence"]
 print(f"restatement committed as version {v_post}")
 
 # %% [markdown]
-# では、何がどう変わったのか。2つのバージョンを SQL 1文でジョインします。エクスポートも
-# 2つ目のデータベースも要りません。`h5i()` が両方の状態を同じクエリに並べます。
+# では、何がどう変わったのか。2つのバージョンを1文でジョインします。エクスポートも2つ目の
+# データベースも要りません。読み取り点を固定した `db.table(...)` を2つ並べれば両方の状態が
+# 同じクエリに入り、ジョインはそれぞれを `l` と `r` という別名で扱います。
 
 # %%
-db.sql(
-    f"""
-    SELECT new.ts, new.symbol,
-           old.close AS close_old, new.close AS close_new,
-           new.close - old.close  AS delta
-    FROM h5i('prices', {v_post}) new
-    JOIN h5i('prices', {v_pre})  old
-      ON new.ts = old.ts AND new.symbol = old.symbol
-    WHERE new.close <> old.close
-    ORDER BY new.symbol
-    """
-).to_pandas()
+new, old = db.table("prices", version=v_post), db.table("prices", version=v_pre)
+
+(
+    new.join(old, on=["ts", "symbol"])
+    .select(
+        ts=col("ts", relation="l"),
+        symbol=col("symbol", relation="l"),
+        close_old=col("close", relation="r"),
+        close_new=col("close", relation="l"),
+        delta=col("close", relation="l") - col("close", relation="r"),
+    )
+    .filter(col("close_new") != col("close_old"))
+    .sort("symbol")
+    .to_pandas()
+)
 
 # %% [markdown]
 # 訂正はバックテストの結果を変えます。わずかに、静かに、そして CSV を上書きしていたなら
@@ -152,8 +158,8 @@ db.sql(
 # そのまま再現します。
 
 # %%
-result_after = backtest_mean_return("prices")
-result_pinned = backtest_mean_return(f"h5i('prices', {v_pre})")
+result_after = backtest_mean_return()
+result_pinned = backtest_mean_return(version=v_pre)
 
 drifted = (result_after["ann_mean_ret"] - result_original["ann_mean_ret"]).abs().max()
 pinned = (result_pinned["ann_mean_ret"] - result_original["ann_mean_ret"]).abs().max()
@@ -190,12 +196,15 @@ print("head content == version", v_pre)
 # %%
 db.snapshot("model-run-2026-07-21", tables=["prices"], note="momentum study, run 42")
 
-db.sql(
-    """
-    SELECT count(*) AS rows, min(ts) AS first_day, max(ts) AS last_day
-    FROM h5i('prices', 'model-run-2026-07-21')
-    """
-).to_pandas()
+(
+    db.table("prices", snapshot="model-run-2026-07-21")
+    .select(
+        rows=count_star(),
+        first_day=col("ts").min(),
+        last_day=col("ts").max(),
+    )
+    .to_pandas()
+)
 
 # %% [markdown]
 # ## まとめ

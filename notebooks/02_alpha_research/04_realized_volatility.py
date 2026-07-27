@@ -15,6 +15,7 @@ import pandas as pd
 import pyarrow as pa
 
 import h5i_db
+from h5i_db import col, count_star, time_bucket
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("alpha_rv"), create=True)
@@ -62,16 +63,17 @@ print(f"{len(tdf):,} trades over {tdf.ts.dt.date.nunique()} sessions")
 # `sqrt(RV_day * 252)`.
 
 # %%
-bars5 = db.sql(
-    """
-    SELECT time_bucket('5m', ts) AS bar,
-           last_value(price ORDER BY ts) AS close,
-           count(*) AS n_trades
-    FROM trades
-    GROUP BY bar
-    ORDER BY bar
-    """
-).to_pandas()
+def price_bars(width: str):
+    """Last trade price per bucket - the same frame at any sampling width."""
+    return (
+        db.table("trades")
+        .group_by(time_bucket(width, col("ts")).alias("bar"))
+        .agg(close=col("price").last("ts"), n_trades=count_star())
+        .sort("bar")
+    )
+
+
+bars5 = price_bars("5m").to_pandas()
 bars5["day"] = bars5["bar"].dt.date
 bars5["r"] = np.log(bars5["close"]).groupby(bars5["day"]).diff()  # within-session only
 
@@ -82,7 +84,7 @@ pd.DataFrame({"rv": rv_daily, "ann_vol_%": np.sqrt(rv_daily * 252) * 100}).round
 # ## 3. The signature plot
 #
 # Recompute RV at sampling intervals from 1 second to 30 minutes - each one is
-# the *same* SQL query with a different bucket width. In a frictionless world
+# the *same* frame with a different bucket width. In a frictionless world
 # RV would be flat across frequencies; with bid-ask bounce, observed returns
 # are `true return + iid noise`, and the noise variance is paid *per
 # observation* - so RV blows up as the interval shrinks. The elbow where the
@@ -94,15 +96,7 @@ INTERVALS_S = [1, 5, 15, 30, 60, 120, 300, 600, 900, 1800]
 
 sig_rows = []
 for sec in INTERVALS_S:
-    b = db.sql(
-        f"""
-        SELECT time_bucket('{sec}sec', ts) AS bar,
-               last_value(price ORDER BY ts) AS close
-        FROM trades
-        GROUP BY bar
-        ORDER BY bar
-        """
-    ).to_pandas()
+    b = price_bars(f"{sec}s").to_pandas()
     b["day"] = b["bar"].dt.date
     r = np.log(b["close"]).groupby(b["day"]).diff()
     rv = (r**2).groupby(b["day"]).sum()
@@ -188,16 +182,13 @@ sschema = pa.schema(
 db.create_table("spy_30m", sschema, time_column="ts", sort_key=["ts"])
 db.append("spy_30m", spy.select(["ts", "symbol", "open", "close"]).cast(sschema))
 
-days = db.sql(
-    """
-    SELECT time_bucket('1d', ts, 'America/New_York') AS day,
-           first_value(open  ORDER BY ts) AS day_open,
-           last_value(close ORDER BY ts)  AS day_close
-    FROM spy_30m
-    GROUP BY day
-    ORDER BY day
-    """
-).to_pandas()
+days = (
+    db.table("spy_30m")
+    .group_by(time_bucket("1d", col("ts"), timezone="America/New_York").alias("day"))
+    .agg(day_open=col("open").first("ts"), day_close=col("close").last("ts"))
+    .sort("day")
+    .to_pandas()
+)
 
 r_on = np.log(days["day_open"] / days["day_close"].shift(1)).dropna()
 r_id = np.log(days["day_close"] / days["day_open"]).iloc[1:]

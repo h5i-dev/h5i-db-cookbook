@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import h5i_db
+from h5i_db import col, sql_expr
 
 import cookbook_utils as cu
 
@@ -56,20 +57,24 @@ db.append(
 # ## 2. A backtest that takes its read point as a parameter
 #
 # The one design decision that makes reproducibility possible: the backtest
-# never hardcodes `FROM prices`. It takes a *relation* - the live table, a
-# pinned snapshot `h5i('prices', 'bt-run-001')`, a version number, or an
-# as-of timestamp - and everything downstream is a pure function of that
-# read point plus params.
+# never hardcodes its read point. It takes one as an argument - the live
+# table, a pinned snapshot, a version number, an as-of timestamp - and
+# everything downstream is a pure function of that read point plus params.
+# `db.table(name, snapshot=..., version=...)` makes the pin a keyword rather
+# than a relation name spliced into a query string.
 #
 # The strategy itself is deliberately plain (126-day momentum, monthly
 # rebalance, top-5 equal weight): the point is the plumbing, not the alpha.
 
 # %%
-def run_backtest(read_point: str, lookback: int = 126, top_n: int = 5) -> dict:
-    """Momentum backtest against any h5i-db relation. Deterministic."""
-    px = db.sql(
-        f"SELECT ts, symbol, close FROM {read_point} ORDER BY ts, symbol"
-    ).to_pandas()
+def run_backtest(snapshot=None, version=None, lookback: int = 126, top_n: int = 5) -> dict:
+    """Momentum backtest against any read point of `prices`. Deterministic."""
+    px = (
+        db.table("prices", snapshot=snapshot, version=version)
+        .select("ts", "symbol", "close")
+        .sort(["ts", "symbol"])
+        .to_pandas()
+    )
     wide = px.pivot(index="ts", columns="symbol", values="close").sort_index()
 
     mom = wide.pct_change(lookback)
@@ -99,7 +104,7 @@ def run_backtest(read_point: str, lookback: int = 126, top_n: int = 5) -> dict:
 # %%
 db.snapshot("bt-run-001", tables=["prices"], note="data pin for momentum study 001")
 
-run1 = run_backtest("h5i('prices', 'bt-run-001')")
+run1 = run_backtest(snapshot="bt-run-001")
 print(f"run 1  sharpe={run1['sharpe']:.6f}  curve sha256={run1['sha256'][:16]}...")
 
 # %% [markdown]
@@ -139,7 +144,7 @@ db.write("prices", restated, note="vendor restatement: dividend-adjustment fix, 
 # irreproducibility incident, reduced to two lines.
 
 # %%
-run2 = run_backtest("prices")
+run2 = run_backtest()  # live head
 print(f"run 1 (pinned data): sharpe={run1['sharpe']:.6f}")
 print(f"run 2 (live table):  sharpe={run2['sharpe']:.6f}")
 print(f"divergence: {abs(run2['sharpe'] - run1['sharpe']):.4f} Sharpe units")
@@ -169,7 +174,7 @@ fig.tight_layout()
 # matches, because the inputs are the same immutable segments.
 
 # %%
-run3 = run_backtest("h5i('prices', 'bt-run-001')")
+run3 = run_backtest(snapshot="bt-run-001")
 
 assert run3["sha256"] == run1["sha256"], "pinned re-run must be bit-identical"
 assert np.array_equal(run3["curve"].to_numpy(), run1["curve"].to_numpy())
@@ -200,9 +205,9 @@ db.create_table("runs", runs_schema, time_column="ts")
 
 params = json.dumps({"strategy": "momentum", "lookback": 126, "top_n": 5, "universe": 20})
 for run_id, read_point, res in [
-    ("bt-run-001", "h5i('prices', 'bt-run-001')", run1),
+    ("bt-run-001", "snapshot bt-run-001", run1),
     ("bt-run-001-naive-rerun", "prices (live head)", run2),
-    ("bt-run-001-verify", "h5i('prices', 'bt-run-001')", run3),
+    ("bt-run-001-verify", "snapshot bt-run-001", run3),
 ]:
     row = pa.table(
         {
@@ -216,13 +221,16 @@ for run_id, read_point, res in [
     )
     db.append("runs", row, note=f"register {run_id}")
 
-db.sql(
-    """
-    SELECT run_id, read_point, round(sharpe, 4) AS sharpe,
-           substr(curve_sha256, 1, 12) AS digest
-    FROM runs ORDER BY ts
-    """
-).to_pandas()
+(
+    db.table("runs")
+    .select(
+        "run_id", "read_point",
+        sharpe=col("sharpe").round(4),
+        digest=sql_expr("substr(curve_sha256, 1, 12)"),
+    )
+    .sort("ts")
+    .to_pandas()
+)
 
 # %% [markdown]
 # ## Takeaways

@@ -14,6 +14,7 @@ import pandas as pd
 import pyarrow as pa
 
 import h5i_db
+from h5i_db import col, count_star, sql_expr
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("alpha_pairs"), create=True)
@@ -63,18 +64,19 @@ from statsmodels.tsa.stattools import coint
 
 CANDIDATES = [("KO", "PEP"), ("GS", "JPM"), ("CVX", "XOM")]
 
-logpx = (
-    db.sql(
-        """
-        SELECT ts, symbol, ln(adj_close) AS log_px
-        FROM prices
-        WHERE symbol IN ('KO','PEP','GS','JPM','CVX','XOM')
-        ORDER BY ts, symbol
-        """
+def log_prices(symbols, version=None):
+    """Log closes for a symbol set, from any version of `prices`."""
+    return (
+        db.table("prices", version=version)
+        .filter(col("symbol").is_in(symbols))
+        .select("ts", "symbol", log_px=col("adj_close").log())
+        .sort(["ts", "symbol"])
+        .to_pandas()
+        .pivot(index="ts", columns="symbol", values="log_px")
     )
-    .to_pandas()
-    .pivot(index="ts", columns="symbol", values="log_px")
-)
+
+
+logpx = log_prices(["KO", "PEP", "GS", "JPM", "CVX", "XOM"])
 
 scan = pd.DataFrame(
     [
@@ -127,25 +129,26 @@ db.append(
 len(spread_df)
 
 # %% [markdown]
-# ## 4. z スコアを SQL で
+# ## 4. z スコアをデータベース側で
 #
-# 売買シグナルは、60日窓に対するスプレッドの z スコアです。平均には h5i-db の糖衣構文
-# `rolling_avg(x, ts, n)` を、ばらつきには標準的な
-# `stddev(...) OVER (... ROWS BETWEEN 59 PRECEDING AND CURRENT ROW)` を使います。1クエリで
-# 整列済みストレージの上を流れ、pandas の `rolling()` は状態を持つバックテスト本体まで出番が
-# ありません。
+# 売買シグナルは、60日窓に対するスプレッドの z スコアです。`.rolling_mean(60, order_by="ts")`
+# と `.rolling_std(60, order_by="ts")` は、それぞれ整列済みストレージ上のウィンドウ集約に
+# 落ちます。1クエリで済み、pandas の `rolling()` は状態を持つバックテスト本体まで出番が
+# ありません。なお `partition_by=` を渡せばこれらは `PARTITION BY` を伴いますが、SQL の糖衣構文
+# `rolling_avg` のほうは決して伴いません。ここのような単一系列のテーブルでしか安全に使えないのは
+# そのためです。
 
 # %%
-zs = db.sql(
-    """
-    SELECT ts, spread, beta,
-           (spread - rolling_avg(spread, ts, 60))
-             / stddev(spread) OVER (ORDER BY ts ROWS BETWEEN 59 PRECEDING AND CURRENT ROW)
-             AS z
-    FROM spread
-    ORDER BY ts
-    """
-).to_pandas()
+zs = (
+    db.table("spread")
+    .select(
+        "ts", "spread", "beta",
+        z=(col("spread") - col("spread").rolling_mean(60, order_by="ts"))
+        / col("spread").rolling_std(60, order_by="ts"),
+    )
+    .sort("ts")
+    .to_pandas()
+)
 zs = zs.set_index("ts")
 zs.tail(3).round(4)
 
@@ -235,31 +238,25 @@ sig_schema = pa.schema(
 db.create_table("signals", sig_schema, time_column="ts", sort_key=["ts"])
 db.append("signals", pa.Table.from_pandas(sig_df, preserve_index=False).cast(sig_schema))
 db.snapshot("pairs-run-001", tables=["prices", "spread", "signals"], note="CVX/XOM |z|>2")
-db.sql("SELECT count(*) AS rows, min(ts) AS first, max(ts) AS last FROM h5i('signals','pairs-run-001')").to_pandas()
+(
+    db.table("signals", snapshot="pairs-run-001")
+    .select(rows=count_star(), first=col("ts").min(), last=col("ts").max())
+    .to_pandas()
+)
 
 # %% [markdown]
 # ## 7. 過去のデータバージョンでパイプラインを走らせ直す
 #
-# 研究全体を、*`prices` のどのバージョンを読むか*でパラメータ化します。SQL のタイムトラベルの
-# おかげで、変更は文字列1つです。`FROM prices` が `FROM h5i('prices', v_early)` になるだけ。
-# 2025年より前のバージョンで走らせれば、2024年の研究が見つけたはずのものが再現します。同じ
+# 研究全体を、*`prices` のどのバージョンを読むか*でパラメータ化します。読み取り点はクエリ文字列に
+# 差し込むテキストではなく `db.table(...)` の引数なので、変更はキーワード1つ、
+# `run_pipeline(version=v_early)` です。2025年より前のバージョンで走らせれば、2024年の研究が見つけたはずのものが再現します。同じ
 # バージョンで2回走らせればビット単位で同一です。ベンダーが足元で歴史を訂正してきたときに、
 # 効いてくる性質です。
 
 # %%
-def run_pipeline(prices_rel: str) -> dict:
-    """Coint p-value + net Sharpe for CVX/XOM from any prices relation."""
-    px = (
-        db.sql(
-            f"""
-            SELECT ts, symbol, ln(adj_close) AS log_px
-            FROM {prices_rel}
-            WHERE symbol IN ('CVX','XOM') ORDER BY ts, symbol
-            """
-        )
-        .to_pandas()
-        .pivot(index="ts", columns="symbol", values="log_px")
-    )
+def run_pipeline(version=None) -> dict:
+    """Coint p-value + net Sharpe for CVX/XOM from any version of prices."""
+    px = log_prices(["CVX", "XOM"], version=version)
     lx_, ly_ = px["CVX"], px["XOM"]
     b = ly_.rolling(252).cov(lx_) / lx_.rolling(252).var()
     s = ly_ - b * lx_
@@ -288,9 +285,9 @@ def run_pipeline(prices_rel: str) -> dict:
 
 runs = pd.DataFrame(
     {
-        "head (today)": run_pipeline("prices"),
-        f"h5i('prices', {v_early})": run_pipeline(f"h5i('prices', {v_early})"),
-        f"h5i('prices', {v_early}) again": run_pipeline(f"h5i('prices', {v_early})"),
+        "head (today)": run_pipeline(),
+        f"version {v_early}": run_pipeline(version=v_early),
+        f"version {v_early} again": run_pipeline(version=v_early),
     }
 ).T
 assert runs.iloc[1].equals(runs.iloc[2]), "same version must reproduce exactly"

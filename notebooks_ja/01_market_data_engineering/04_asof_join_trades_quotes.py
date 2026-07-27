@@ -22,6 +22,7 @@ import pyarrow as pa
 import matplotlib.pyplot as plt
 
 import h5i_db
+from h5i_db import col, count_star, lit, sql_expr, when
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("mde_asof"), create=True)
@@ -97,13 +98,11 @@ print(f"{len(tr):,} trades, {len(qp):,} quotes over 2 sessions")
 
 # %%
 t0 = time.perf_counter()
-joined = db.sql(
-    """
-    SELECT ts, symbol, trade_id, price, side, ts_right, bid, ask
-    FROM asof_join('trades', 'quotes', 'ts', 'ts', 'symbol')
-    ORDER BY trade_id
-    """
-).to_pandas()
+TQ = db.table("trades").join_asof(db.table("quotes"), on="ts", by="symbol")
+
+joined = TQ.select(
+    "ts", "symbol", "trade_id", "price", "side", "ts_right", "bid", "ask"
+).sort("trade_id").to_pandas()
 elapsed_ms = (time.perf_counter() - t0) * 1e3
 print(f"{len(joined):,} trades matched against {len(qp):,} quotes "
       f"in {elapsed_ms:.1f} ms")
@@ -149,26 +148,23 @@ db.sql(
 # asof ジョインがウィンドウ関数に入り、それが `CASE` に入ります。
 
 # %%
-signed = db.sql(
-    """
-    WITH j AS (
-        SELECT ts, symbol, trade_id, price, size, side, bid, ask,
-               (bid + ask) / 2 AS mid
-        FROM asof_join('trades', 'quotes', 'ts', 'ts', 'symbol')
-    ),
-    t AS (
-        SELECT *, lag(price) OVER (PARTITION BY symbol ORDER BY ts) AS prev_px
-        FROM j
+PREV_PX = sql_expr("lag(price)").over(partition_by="symbol", order_by="ts")
+
+signed = (
+    TQ.select(
+        "ts", "symbol", "trade_id", "price", "size", "side", "bid", "ask",
+        mid=(col("bid") + col("ask")) / 2,
     )
-    SELECT *,
-           CASE WHEN price > mid THEN 'B'
-                WHEN price < mid THEN 'S'
-                WHEN price > prev_px THEN 'B'
-                WHEN price < prev_px THEN 'S'
-                ELSE 'U' END AS lr_side
-    FROM t
-    """
-).to_pandas()
+    .with_columns(prev_px=PREV_PX)
+    .with_columns(
+        lr_side=when(col("price") > col("mid")).then(lit("B"))
+        .when(col("price") < col("mid")).then(lit("S"))
+        .when(col("price") > col("prev_px")).then(lit("B"))
+        .when(col("price") < col("prev_px")).then(lit("S"))
+        .otherwise(lit("U"))
+    )
+    .to_pandas()
+)
 
 overall = (signed["lr_side"] == signed["side"]).mean()
 quote_rule = signed[signed["price"] != signed["mid"]]
@@ -197,35 +193,42 @@ pd.crosstab(signed["lr_side"], signed["side"], margins=True)
 # 以降で最初の気配です。すべてが1文に収まり、単位はミッドに対するベーシスポイントです。
 
 # %%
-spreads = db.sql(
-    """
-    WITH j AS (
-        SELECT symbol, trade_id, price, side, bid, ask, (bid + ask) / 2 AS mid
-        FROM asof_join('trades', 'quotes', 'ts', 'ts', 'symbol')
-    ),
-    m AS (
-        SELECT trade_id, (bid + ask) / 2 AS mid_5m
-        FROM asof_join('marks', 'quotes', 'ts', 'ts', 'symbol', 'forward')
+MID = (col("bid") + col("ask")) / 2
+
+j = TQ.select("symbol", "trade_id", "price", "side", "bid", "ask", mid=MID)
+m = (
+    db.table("marks")
+    .join_asof(db.table("quotes"), on="ts", by="symbol", direction="forward")
+    .select("trade_id", mid_5m=MID)
+)
+
+# .join() aliases the sides l and r: l is the trade-time join, r the mark.
+px = col("price", relation="l")
+mid = col("mid", relation="l")
+mid_5m = col("mid_5m", relation="r")
+direction = when(col("side", relation="l") == "B").then(lit(1)).otherwise(lit(-1))
+
+spreads = (
+    j.join(m, on="trade_id")
+    .filter(mid_5m.is_not_null())
+    .group_by(col("symbol", relation="l").alias("symbol"))
+    .agg(
+        quoted_bps=((col("ask", relation="l") - col("bid", relation="l")) / mid).mean() * 1e4,
+        effective_bps=(2 * (px - mid).abs() / mid).mean() * 1e4,
+        realized_bps=(2 * direction * (px - mid_5m) / mid).mean() * 1e4,
+        n_trades=count_star(),
     )
-    SELECT j.symbol,
-           avg((j.ask - j.bid) / j.mid) * 1e4                    AS quoted_bps,
-           avg(2 * abs(j.price - j.mid) / j.mid) * 1e4           AS effective_bps,
-           avg(2 * (CASE WHEN j.side = 'B' THEN 1 ELSE -1 END)
-                 * (j.price - m.mid_5m) / j.mid) * 1e4           AS realized_bps,
-           count(*)                                              AS n_trades
-    FROM j JOIN m USING (trade_id)
-    WHERE m.mid_5m IS NOT NULL
-    GROUP BY 1 ORDER BY 1
-    """
-).to_pandas()
+    .sort("symbol")
+    .to_pandas()
+)
 spreads
 
 # %%
 x = np.arange(len(spreads))
 w = 0.27
 fig, ax = plt.subplots(figsize=(8, 4))
-for i, col in enumerate(("quoted_bps", "effective_bps", "realized_bps")):
-    ax.bar(x + (i - 1) * w, spreads[col], width=w, label=col.replace("_bps", ""))
+for i, measure in enumerate(("quoted_bps", "effective_bps", "realized_bps")):
+    ax.bar(x + (i - 1) * w, spreads[measure], width=w, label=measure.replace("_bps", ""))
 ax.set_xticks(x, spreads["symbol"])
 ax.set_title("Spread measures by symbol (bps of mid)")
 ax.set_xlabel("symbol")
@@ -257,11 +260,12 @@ db.append("quotes_sparse", pa.Table.from_pandas(qs, preserve_index=False).cast(q
 
 for label, tol in [("no tolerance", None), ("60s tolerance", 60_000_000),
                    ("5s tolerance", 5_000_000)]:
-    args = "'ts', 'ts', 'symbol'" + (f", 'backward', {tol}" if tol else "")
-    r = db.sql(
-        f"SELECT count(*) AS n, count(bid) AS matched "
-        f"FROM asof_join('trades', 'quotes_sparse', {args})"
-    ).to_pandas()
+    r = (
+        db.table("trades")
+        .join_asof(db.table("quotes_sparse"), on="ts", by="symbol", tolerance=tol)
+        .select(n=count_star(), matched=col("bid").count())
+        .to_pandas()
+    )
     print(f"{label:>13}: {r['matched'][0]:,} of {r['n'][0]:,} trades matched "
           f"({r['matched'][0] / r['n'][0]:.1%})")
 
@@ -272,14 +276,18 @@ for label, tol in [("no tolerance", None), ("60s tolerance", 60_000_000),
 #
 # ## まとめ
 #
-# - `asof_join('trades', 'quotes', 'ts', 'ts', 'symbol')` だけで、約定と気配の整列は
-#   完結します。キー別で、時刻的に正しく、整列済みストレージの上をストリーミングで流れ、
-#   `pandas.merge_asof` と行単位で一致します。
-# - 方向と許容差は一級の引数です。`'forward'` は実現スプレッド用に5分後のミッドを取って
-#   きました。マイクロ秒の許容差は、古い気配での評価を目に見えて数えられる NULL に変えました。
+# - `.join_asof(other, on="ts", by="symbol")` だけで、約定と気配の整列は完結します。
+#   キー別で、時刻的に正しく、整列済みストレージの上をストリーミングで流れ、
+#   `pandas.merge_asof` と行単位で一致します。両側とも素の（読み取り点を固定していない）
+#   テーブルである必要があるため——下敷きの `asof_join` はテーブル名を取ります——絞り込みは
+#   ジョインの*あと*に置きます。
+# - 方向と許容差は一級の引数です。`direction="forward"` は実現スプレッド用に5分後のミッドを
+#   取ってきました。マイクロ秒の `tolerance` は、古い気配での評価を目に見えて数えられる NULL に
+#   変えます。しかもその掃引は Python のループで済み、3つの文を手で書き分けずに済みます。
 #   右側の列名が衝突すると `_right` が付きます。
-# - このジョインは SQL の残りと合成できます。Lee-Ready の判定も、クオート／実効／実現の
-#   完全な分解も、それぞれ1文で書けます（CTE と `lag()` と `CASE`）。
+# - ジョイン済みのフレームは合成できます。変数（`TQ`）に持っておけば、Lee-Ready の判定も、
+#   クオート／実効／実現の完全な分解も、その上に積み上がります。CASE の階段は
+#   `when().then()`、ティックテストは `sql_expr("lag(price)")` の `.over(...)` です。
 # - 正解に対する採点には、約定と気配が1つの価格過程を共有するテープが要ります。合成データで
 #   判定精度をベンチマークする前に、思い出す価値のある点です。
 

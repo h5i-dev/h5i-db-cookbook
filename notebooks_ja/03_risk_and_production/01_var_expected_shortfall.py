@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import h5i_db
+from h5i_db import col, count_star
 
 import cookbook_utils as cu
 
@@ -50,7 +51,7 @@ db.append(
     note="vendor backfill 2018-2026",
 )
 
-db.sql("SELECT count(*) AS rows, count(DISTINCT symbol) AS names FROM prices").to_pandas()
+db.table("prices").select(rows=count_star(), names=col("symbol").n_unique()).to_pandas()
 
 # %% [markdown]
 # ## 2. ポートフォリオの損益系列を SQL 1文で
@@ -70,6 +71,7 @@ WEIGHTS_SQL = """
     ) AS w(symbol, weight)
 """
 
+# An inline VALUES relation has no builder verb, so this one stays SQL.
 port = db.sql(
     f"""
     WITH rets AS (
@@ -233,15 +235,19 @@ print(f"segments: {before['segments']} -> {compacted['segments_total']}, "
 # SQL で取り出します。
 
 # %%
-db.sql(
-    """
-    SELECT ts, round(pnl) AS pnl, round(-var95) AS var95_floor, round(-var99) AS var99_floor
-    FROM risk_metrics
-    WHERE pnl < -var95 AND ts >= '2024-07-01T00:00:00Z'
-    ORDER BY ts DESC
-    LIMIT 8
-    """
-).to_pandas()
+(
+    db.table("risk_metrics")
+    .filter(col("pnl") < -col("var95"), col("ts") >= "2024-07-01T00:00:00Z")
+    .select(
+        "ts",
+        pnl=col("pnl").round(),
+        var95_floor=(-col("var95")).round(),
+        var99_floor=(-col("var99")).round(),
+    )
+    .sort("ts", descending=True)
+    .limit(8)
+    .to_pandas()
+)
 
 # %% [markdown]
 # ## 6. VaR のバンドに対する損益と、印を付けた breach

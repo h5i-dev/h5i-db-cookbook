@@ -12,12 +12,13 @@
 #
 # 1. データベースと `trades` テーブルを作る
 # 2. 数日分のティックデータを取り込む
-# 3. SQL 1文で VWAP 付きの分足を計算する
+# 3. クエリ1つで VWAP 付きの分足を計算する
 # 4. テーブルを過去のバージョンへ巻き戻す
 
 # %%
 import h5i_db
 import pyarrow as pa
+from h5i_db import col, count_star, time_bucket, vwap
 
 import cookbook_utils as cu
 
@@ -61,29 +62,39 @@ commit = db.append("trades", trades)
 commit
 
 # %% [markdown]
-# ## 3. SQL で問い合わせる
+# ## 3. 問い合わせる
 #
-# DataFusion による完全な SQL に、金融向けの演算子が加わります。10万件を超えるティックが
-# 1文で VWAP 付きの分足になり、しかもセグメントが時刻順で保存されているので、ソートを
-# 挟まずストリーミングで流れます。
+# 同じエンジンに面が2つあります。`db.table(...)` はメソッド呼び出しで組み立てる**遅延クエリ**
+# の入口で、`.to_pandas()` を呼ぶまで何も走りません。`db.sql(...)` のほうは文字列を取ります。
+# どちらも DataFusion を通り、同じ金融向けの演算子が使えます。バーの格子は `time_bucket`、
+# 始値と終値はイベント時刻で決める `.first("ts")` と `.last("ts")`、`vwap` は組み込みの集約
+# 関数です。セグメントは時刻順で保存されているので、ソートを挟まずストリーミングで流れます。
 
 # %%
-bars = db.sql(
-    """
-    SELECT time_bucket('1m', ts) AS bar,
-           symbol,
-           first_value(price ORDER BY ts) AS open,
-           max(price)                     AS high,
-           min(price)                     AS low,
-           last_value(price ORDER BY ts)  AS close,
-           sum(size)                      AS volume,
-           vwap(price, size)              AS vwap
-    FROM trades
-    GROUP BY bar, symbol
-    ORDER BY bar, symbol
-    """
-).to_pandas()
+bar_query = (
+    db.table("trades")
+    .group_by(time_bucket("1m", col("ts")).alias("bar"), "symbol")
+    .agg(
+        col("price").first("ts").alias("open"),
+        col("price").max().alias("high"),
+        col("price").min().alias("low"),
+        col("price").last("ts").alias("close"),
+        col("size").sum().alias("volume"),
+        vwap(col("price"), col("size")).alias("vwap"),
+    )
+    .sort(["bar", "symbol"])
+)
+bars = bar_query.to_pandas()
 bars.head(8)
+
+# %% [markdown]
+# ビルダの正体はコンパイラです。第2のエンジンが増えるわけではありません。`.sql()` を呼べば
+# DataFusion に渡したものがそのまま見えますし、その文字列は `db.sql()` に貼れば動きます。ビルダ自体はレシピ09
+# で扱います。以降のクックブックは既定でビルダを使い、文字列のほうが読みやすい場面だけ
+# SQL に降ります。
+
+# %%
+print(bar_query.sql())
 
 # %%
 import matplotlib.pyplot as plt
@@ -115,25 +126,29 @@ db.append("trades", day4, note="day 4 feed")
 # %%
 v1_rows = len(db.read("trades", version=1))
 v2_rows = len(db.read("trades", version=2))
-latest = db.sql("SELECT count(*) AS n FROM trades").to_pandas()["n"][0]
+latest = db.table("trades").select(count_star().alias("n")).to_pandas()["n"][0]
 print(f"version 1: {v1_rows:,} rows\nversion 2: {v2_rows:,} rows\nlatest:    {latest:,} rows")
 
 # %% [markdown]
-# タイムトラベルは SQL の中でも効きます。`h5i()` テーブル関数を使えば、過去の
-# バージョンと最新のテーブルを1つの文で突き合わせられます。
+# タイムトラベルはクエリの中でも効きます。過去のバージョンと最新のテーブルを1つの文で
+# 突き合わせられます。読み取り点は `db.table(...)` に渡すだけで、内部では `h5i()` テーブル
+# 関数に落ちます。クエリはバージョンの関数として一度書いておけば済みます。
 
 # %%
-db.sql(
-    """
-    SELECT now.symbol,
-           now.n  - was.n  AS trades_added,
-           now.mx - was.mx AS ts_advanced_by
-    FROM      (SELECT symbol, count(*) AS n, max(ts) AS mx FROM trades GROUP BY symbol) now
-    JOIN      (SELECT symbol, count(*) AS n, max(ts) AS mx FROM h5i('trades', 1) GROUP BY symbol) was
-    USING (symbol)
-    ORDER BY symbol
-    """
-).to_pandas()
+def per_symbol(version=None):
+    return (
+        db.table("trades", version=version)
+        .group_by("symbol")
+        .agg(count_star().alias("n"), col("ts").max().alias("mx"))
+    )
+
+
+was, now = per_symbol(1), per_symbol()
+now.join(was, on="symbol").select(
+    symbol=col("symbol", relation="l"),
+    trades_added=col("n", relation="l") - col("n", relation="r"),
+    ts_advanced_by=col("mx", relation="l") - col("mx", relation="r"),
+).sort("symbol").to_pandas()
 
 # %% [markdown]
 # ## まとめ
@@ -142,10 +157,11 @@ db.sql(
 #   要りません。`pip install` して `Database(path, create=True)` を呼べば終わりです。
 # - `append` は時刻順が厳密に守られるフィード型のアトミックコミットです。取り込みに
 #   失敗しても、それ以前のバージョンはすべて残っています。
-# - OHLCV と VWAP のバーは SQL 1文で得られ、整列済みストレージの上をストリーミングで
-#   流れます。
-# - タイムトラベルは一級の機能です。Python なら `db.read(v)`、SQL なら
-#   `h5i('table', v)` で、どちらも O(1)。これが再現可能なリサーチの背骨になります
+# - OHLCV と VWAP のバーはクエリ1つで得られ、整列済みストレージの上をストリーミングで
+#   流れます。`db.table(...)` の動詞で組み立てても、SQL で書いても構いません。両者をつなぐ
+#   扉が `.sql()` です（レシピ09）。
+# - タイムトラベルは一級の機能です。Python なら `db.read(v)`、ビルダなら `db.table(v)`、
+#   SQL なら `h5i('table', v)` で、いずれも O(1)。これが再現可能なリサーチの背骨になります
 #   （レシピ05を参照）。
 
 # %%

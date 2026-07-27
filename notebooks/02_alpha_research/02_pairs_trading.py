@@ -15,6 +15,7 @@ import pandas as pd
 import pyarrow as pa
 
 import h5i_db
+from h5i_db import col, count_star, sql_expr
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("alpha_pairs"), create=True)
@@ -66,18 +67,19 @@ from statsmodels.tsa.stattools import coint
 
 CANDIDATES = [("KO", "PEP"), ("GS", "JPM"), ("CVX", "XOM")]
 
-logpx = (
-    db.sql(
-        """
-        SELECT ts, symbol, ln(adj_close) AS log_px
-        FROM prices
-        WHERE symbol IN ('KO','PEP','GS','JPM','CVX','XOM')
-        ORDER BY ts, symbol
-        """
+def log_prices(symbols, version=None):
+    """Log closes for a symbol set, from any version of `prices`."""
+    return (
+        db.table("prices", version=version)
+        .filter(col("symbol").is_in(symbols))
+        .select("ts", "symbol", log_px=col("adj_close").log())
+        .sort(["ts", "symbol"])
+        .to_pandas()
+        .pivot(index="ts", columns="symbol", values="log_px")
     )
-    .to_pandas()
-    .pivot(index="ts", columns="symbol", values="log_px")
-)
+
+
+logpx = log_prices(["KO", "PEP", "GS", "JPM", "CVX", "XOM"])
 
 scan = pd.DataFrame(
     [
@@ -131,25 +133,27 @@ db.append(
 len(spread_df)
 
 # %% [markdown]
-# ## 4. Z-score in SQL
+# ## 4. Z-score in the database
 #
-# The trading signal is the spread's z-score against a 60-day window. h5i-db
-# gives us `rolling_avg(x, ts, n)` sugar for the mean and a standard
-# `stddev(...) OVER (... ROWS BETWEEN 59 PRECEDING AND CURRENT ROW)` for the
-# dispersion - one query, streaming over sorted storage, no pandas
-# `rolling()` needed until the stateful backtest itself.
+# The trading signal is the spread's z-score against a 60-day window.
+# `.rolling_mean(60, order_by="ts")` and `.rolling_std(60, order_by="ts")`
+# each lower to a windowed aggregate over sorted storage - one query, no
+# pandas `rolling()` needed until the stateful backtest itself. (These carry
+# a `PARTITION BY` when you pass `partition_by=`; the `rolling_avg` SQL sugar
+# never does, which is why it is only safe on a single-series table like this
+# one.)
 
 # %%
-zs = db.sql(
-    """
-    SELECT ts, spread, beta,
-           (spread - rolling_avg(spread, ts, 60))
-             / stddev(spread) OVER (ORDER BY ts ROWS BETWEEN 59 PRECEDING AND CURRENT ROW)
-             AS z
-    FROM spread
-    ORDER BY ts
-    """
-).to_pandas()
+zs = (
+    db.table("spread")
+    .select(
+        "ts", "spread", "beta",
+        z=(col("spread") - col("spread").rolling_mean(60, order_by="ts"))
+        / col("spread").rolling_std(60, order_by="ts"),
+    )
+    .sort("ts")
+    .to_pandas()
+)
 zs = zs.set_index("ts")
 zs.tail(3).round(4)
 
@@ -241,32 +245,26 @@ sig_schema = pa.schema(
 db.create_table("signals", sig_schema, time_column="ts", sort_key=["ts"])
 db.append("signals", pa.Table.from_pandas(sig_df, preserve_index=False).cast(sig_schema))
 db.snapshot("pairs-run-001", tables=["prices", "spread", "signals"], note="CVX/XOM |z|>2")
-db.sql("SELECT count(*) AS rows, min(ts) AS first, max(ts) AS last FROM h5i('signals','pairs-run-001')").to_pandas()
+(
+    db.table("signals", snapshot="pairs-run-001")
+    .select(rows=count_star(), first=col("ts").min(), last=col("ts").max())
+    .to_pandas()
+)
 
 # %% [markdown]
 # ## 7. Re-run the pipeline on an earlier data version
 #
-# The whole study, parameterized by *which version of `prices` it reads*. SQL
-# time travel makes this a one-string change: `FROM prices` becomes
-# `FROM h5i('prices', v_early)`. Running on the pre-2025 version reproduces
-# what a 2024 study would have found; running it twice on the same version is
-# bit-identical - the property that matters when a vendor restates history
-# under your feet.
+# The whole study, parameterized by *which version of `prices` it reads*.
+# Because the read point is an argument to `db.table(...)` rather than text
+# spliced into a query, that is one keyword: `run_pipeline(version=v_early)`.
+# Running on the pre-2025 version reproduces what a 2024 study would have
+# found; running it twice on the same version is bit-identical - the property
+# that matters when a vendor restates history under your feet.
 
 # %%
-def run_pipeline(prices_rel: str) -> dict:
-    """Coint p-value + net Sharpe for CVX/XOM from any prices relation."""
-    px = (
-        db.sql(
-            f"""
-            SELECT ts, symbol, ln(adj_close) AS log_px
-            FROM {prices_rel}
-            WHERE symbol IN ('CVX','XOM') ORDER BY ts, symbol
-            """
-        )
-        .to_pandas()
-        .pivot(index="ts", columns="symbol", values="log_px")
-    )
+def run_pipeline(version=None) -> dict:
+    """Coint p-value + net Sharpe for CVX/XOM from any version of prices."""
+    px = log_prices(["CVX", "XOM"], version=version)
     lx_, ly_ = px["CVX"], px["XOM"]
     b = ly_.rolling(252).cov(lx_) / lx_.rolling(252).var()
     s = ly_ - b * lx_
@@ -295,9 +293,9 @@ def run_pipeline(prices_rel: str) -> dict:
 
 runs = pd.DataFrame(
     {
-        "head (today)": run_pipeline("prices"),
-        f"h5i('prices', {v_early})": run_pipeline(f"h5i('prices', {v_early})"),
-        f"h5i('prices', {v_early}) again": run_pipeline(f"h5i('prices', {v_early})"),
+        "head (today)": run_pipeline(),
+        f"version {v_early}": run_pipeline(version=v_early),
+        f"version {v_early} again": run_pipeline(version=v_early),
     }
 ).T
 assert runs.iloc[1].equals(runs.iloc[2]), "same version must reproduce exactly"

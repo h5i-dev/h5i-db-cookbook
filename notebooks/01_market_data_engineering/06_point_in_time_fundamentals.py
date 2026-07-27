@@ -17,6 +17,7 @@ import pandas as pd
 import pyarrow as pa
 
 import h5i_db
+from h5i_db import col, count_star, lit, time_bucket, when
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("mde_pit"), create=True)
@@ -135,16 +136,14 @@ db.append(
 # below - it turns silent join mistakes into loud ones.
 
 # %%
-monthly = db.sql(
-    """
-    SELECT max(ts)                        AS ts,
-           symbol,
-           last_value(close ORDER BY ts)  AS close
-    FROM prices
-    GROUP BY time_bucket('1mo', ts), symbol
-    ORDER BY ts, symbol
-    """
-).to_arrow()
+monthly = (
+    db.table("prices")
+    .group_by(time_bucket("1mo", col("ts")).alias("month"), "symbol")
+    .agg(month_end=col("ts").max(), close=col("close").last("ts"))
+    .select(col("month_end").alias("ts"), "symbol", "close")
+    .sort(["ts", "symbol"])
+    .to_arrow()
+)
 
 MONTHLY_SCHEMA = pa.schema(
     [
@@ -169,26 +168,26 @@ print(f"{N_MONTHLY} month-end observations")
 # "known since" provenance.
 
 # %%
-pit = db.sql(
-    """
-    SELECT ts, symbol, close, eps, eps_growth,
-           ts_right   AS known_since,
-           period_end
-    FROM asof_join('prices_m', 'fundamentals', 'ts', 'ts', 'symbol')
-    ORDER BY ts, symbol
-    """
-).to_pandas()
+pit = (
+    db.table("prices_m")
+    .join_asof(db.table("fundamentals"), on="ts", by="symbol")
+    .select("ts", "symbol", "close", "eps", "eps_growth", "period_end",
+            known_since=col("ts_right"))
+    .sort(["ts", "symbol"])
+    .to_pandas()
+)
 assert len(pit) == N_MONTHLY, f"ASOF returned {len(pit)} rows for {N_MONTHLY} left rows"
 
 # spot-check the ASOF result against an independent point query
 probe = pit[pit["symbol"] == "STK005"].iloc[12]
-point = db.sql(
-    f"""
-    SELECT eps FROM fundamentals
-    WHERE symbol = 'STK005' AND ts <= '{probe['ts'].isoformat()}'
-    ORDER BY ts DESC LIMIT 1
-    """
-).to_pandas()["eps"][0]
+point = (
+    db.table("fundamentals")
+    .filter(col("symbol") == "STK005", col("ts") <= probe["ts"].isoformat())
+    .sort("ts", descending=True)
+    .limit(1)
+    .select("eps")
+    .to_pandas()["eps"][0]
+)
 assert point == probe["eps"]
 
 pit[pit["symbol"] == "STK000"].iloc[3:9]
@@ -200,13 +199,16 @@ pit[pit["symbol"] == "STK000"].iloc[3:9]
 
 # %%
 TOL_US = 120 * 86_400 * 1_000_000
-db.sql(
-    f"""
-    SELECT count(*)                                          AS month_ends,
-           sum(CASE WHEN eps IS NULL THEN 1 ELSE 0 END)      AS no_fresh_report
-    FROM asof_join('prices_m', 'fundamentals', 'ts', 'ts', 'symbol', 'backward', {TOL_US})
-    """
-).to_pandas()
+
+(
+    db.table("prices_m")
+    .join_asof(db.table("fundamentals"), on="ts", by="symbol", tolerance=TOL_US)
+    .select(
+        month_ends=count_star(),
+        no_fresh_report=when(col("eps").is_null()).then(lit(1)).otherwise(lit(0)).sum(),
+    )
+    .to_pandas()
+)
 
 # %% [markdown]
 # ## 4. The wrong join, and what it costs
@@ -218,13 +220,13 @@ db.sql(
 # mechanical size of the leak:
 
 # %%
-ahead = db.sql(
-    """
-    SELECT ts, symbol, close, eps AS eps_ahead, eps_growth AS growth_ahead
-    FROM asof_join('prices_m', 'fundamentals', 'ts', 'period_end', 'symbol')
-    ORDER BY ts, symbol
-    """
-).to_pandas()
+ahead = (
+    db.table("prices_m")
+    .join_asof(db.table("fundamentals"), left_on="ts", right_on="period_end", by="symbol")
+    .select("ts", "symbol", "close", eps_ahead=col("eps"), growth_ahead=col("eps_growth"))
+    .sort(["ts", "symbol"])
+    .to_pandas()
+)
 assert len(ahead) == N_MONTHLY
 
 panel = pit.merge(ahead[["ts", "symbol", "eps_ahead", "growth_ahead"]], on=["ts", "symbol"])
@@ -249,10 +251,10 @@ panel = panel.merge(fut[["ts", "symbol", "fwd21"]], on=["ts", "symbol"], how="le
 panel["fwd21_rel"] = panel["fwd21"] - panel.groupby("ts")["fwd21"].transform("mean")
 
 rows = []
-for label, col in [("point-in-time", "eps_growth"), ("lookahead", "growth_ahead")]:
-    d = panel.dropna(subset=[col, "fwd21_rel"])
-    d = d[d[col] != 0]
-    sig = np.sign(d[col])
+for label, field in [("point-in-time", "eps_growth"), ("lookahead", "growth_ahead")]:
+    d = panel.dropna(subset=[field, "fwd21_rel"])
+    d = d[d[field] != 0]
+    sig = np.sign(d[field])
     up, dn = d.loc[sig > 0, "fwd21_rel"].mean(), d.loc[sig < 0, "fwd21_rel"].mean()
     rows.append(
         {
@@ -307,22 +309,21 @@ restated = pa.table(
 ).cast(FUNDA_SCHEMA)
 db.append("fundamentals", restated, note="STK003 EPS restated +35% (audit adjustment)")
 
-db.sql(
-    f"""
-    SELECT 'head (post-restatement)' AS view, eps, ts AS known_since
-    FROM fundamentals
-    WHERE symbol = 'STK003' ORDER BY ts DESC LIMIT 1
-    """
-).to_pandas()
+def latest_report(label: str, version=None):
+    return (
+        db.table("fundamentals", version=version)
+        .filter(col("symbol") == "STK003")
+        .sort("ts", descending=True)
+        .limit(1)
+        .select(lit(label).alias("view"), "eps", known_since=col("ts"))
+        .to_pandas()
+    )
+
+
+latest_report("head (post-restatement)")
 
 # %%
-db.sql(
-    f"""
-    SELECT 'pinned v{v_study} (as studied)' AS view, eps, ts AS known_since
-    FROM h5i('fundamentals', {v_study})
-    WHERE symbol = 'STK003' ORDER BY ts DESC LIMIT 1
-    """
-).to_pandas()
+latest_report(f"pinned v{v_study} (as studied)", version=v_study)
 
 # %% [markdown]
 # Recording `v_study` (or a named snapshot) alongside a research run means the

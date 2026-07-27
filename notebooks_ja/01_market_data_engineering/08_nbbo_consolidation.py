@@ -15,6 +15,7 @@ import pandas as pd
 import pyarrow as pa
 
 import h5i_db
+from h5i_db import col, count_star, lit, sql_expr, time_bucket, when
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("mde_nbbo"), create=True)
@@ -112,25 +113,25 @@ print(f"grid: {len(grid_times)} instants x {len(VENUES)} venues = {len(grid):,} 
 
 # %%
 STALE_US = 60 * 1_000_000
-db.sql(
-    f"""
-    SELECT ts, venue, bid, ask, ts_right AS quoted_at
-    FROM asof_join('nbbo_grid', 'venue_quotes', 'ts', 'ts', 'venue', 'backward', {STALE_US})
-    ORDER BY ts, venue
-    LIMIT 6
-    """
-).to_pandas()
+
+# One frame, reused for every question below: each grid instant x venue gets
+# the venue's prevailing quote, or NULL if the last one is older than STALE_US.
+SNAPSHOT = db.table("nbbo_grid").join_asof(
+    db.table("venue_quotes"), on="ts", by="venue",
+    direction="backward", tolerance=STALE_US,
+)
+
+(
+    SNAPSHOT.select("ts", "venue", "bid", "ask", quoted_at=col("ts_right"))
+    .sort(["ts", "venue"])
+    .limit(6)
+    .to_pandas()
+)
 
 # %%
 # Trust, but verify: one output row per grid row, and the SQL ASOF must agree
 # with an independent pandas merge_asof on a venue's book.
-state = db.sql(
-    f"""
-    SELECT ts, venue, bid, ask
-    FROM asof_join('nbbo_grid', 'venue_quotes', 'ts', 'ts', 'venue', 'backward', {STALE_US})
-    ORDER BY ts, venue
-    """
-).to_pandas()
+state = SNAPSHOT.select("ts", "venue", "bid", "ask").sort(["ts", "venue"]).to_pandas()
 assert len(state) == len(grid), f"ASOF join returned {len(state)} rows for {len(grid)} grid rows"
 
 ref = pd.merge_asof(
@@ -150,18 +151,13 @@ print(f"validated: {len(state):,} snapshot rows, XNAS column matches pandas merg
 # 統合を走らせ直さずに `nbbo_10s` を読めます。
 
 # %%
-nbbo = db.sql(
-    f"""
-    SELECT ts,
-           max(bid)   AS nbb,
-           min(ask)   AS nbo,
-           count(bid) AS venues_quoting
-    FROM asof_join('nbbo_grid', 'venue_quotes', 'ts', 'ts', 'venue', 'backward', {STALE_US})
-    GROUP BY ts
-    HAVING max(bid) IS NOT NULL AND min(ask) IS NOT NULL
-    ORDER BY ts
-    """
-).to_arrow()
+nbbo = (
+    SNAPSHOT.group_by("ts")
+    .agg(nbb=col("bid").max(), nbo=col("ask").min(), venues_quoting=col("bid").count())
+    .filter(col("nbb").is_not_null(), col("nbo").is_not_null())  # the HAVING
+    .sort("ts")
+    .to_arrow()
+)
 
 NBBO_SCHEMA = pa.schema(
     [
@@ -173,7 +169,7 @@ NBBO_SCHEMA = pa.schema(
 )
 db.create_table("nbbo_10s", NBBO_SCHEMA, time_column="ts")
 db.append("nbbo_10s", nbbo.cast(NBBO_SCHEMA), note="10s-sampled NBBO from 3 venues")
-db.sql("SELECT * FROM nbbo_10s LIMIT 5").to_pandas()
+db.table("nbbo_10s").limit(5).to_pandas()
 
 # %% [markdown]
 # ## 4. 内側を作っているのは誰か、ロックやクロスはどれくらい起きるか
@@ -185,39 +181,40 @@ db.sql("SELECT * FROM nbbo_10s LIMIT 5").to_pandas()
 # NBBO パイプラインもそれをどう扱うか決めなければなりません。
 
 # %%
-db.sql(
-    f"""
-    WITH state AS (
-        SELECT ts, venue, bid, ask
-        FROM asof_join('nbbo_grid', 'venue_quotes', 'ts', 'ts', 'venue', 'backward', {STALE_US})
-        WHERE bid IS NOT NULL AND ask IS NOT NULL
-    ),
-    ranked AS (
-        SELECT venue, bid, ask,
-               max(bid) OVER (PARTITION BY ts) AS nbb,
-               min(ask) OVER (PARTITION BY ts) AS nbo
-        FROM state
+QUOTING = SNAPSHOT.filter(col("bid").is_not_null(), col("ask").is_not_null())
+
+share = lambda flag: (when(flag).then(lit(1.0)).otherwise(lit(0.0)).mean() * 100).round(1)
+
+(
+    QUOTING.with_columns(
+        nbb=col("bid").max().over(partition_by="ts"),
+        nbo=col("ask").min().over(partition_by="ts"),
     )
-    SELECT venue,
-           round(avg(CASE WHEN bid >= nbb THEN 1.0 ELSE 0.0 END) * 100, 1) AS pct_at_best_bid,
-           round(avg(CASE WHEN ask <= nbo THEN 1.0 ELSE 0.0 END) * 100, 1) AS pct_at_best_ask,
-           round(avg(ask - bid), 4)                                        AS avg_own_spread
-    FROM ranked
-    GROUP BY venue
-    ORDER BY venue
-    """
-).to_pandas()
+    .group_by("venue")
+    .agg(
+        pct_at_best_bid=share(col("bid") >= col("nbb")),
+        pct_at_best_ask=share(col("ask") <= col("nbo")),
+        avg_own_spread=(col("ask") - col("bid")).mean().round(4),
+    )
+    .sort("venue")
+    .to_pandas()
+)
 
 # %%
-db.sql(
-    """
-    SELECT count(*)                                        AS instants,
-           sum(CASE WHEN nbb = nbo THEN 1 ELSE 0 END)      AS locked,
-           sum(CASE WHEN nbb > nbo THEN 1 ELSE 0 END)      AS crossed,
-           round(avg(CASE WHEN nbb >= nbo THEN 1.0 ELSE 0.0 END) * 100, 2) AS pct_locked_or_crossed
-    FROM nbbo_10s
-    """
-).to_pandas()
+count_if = lambda flag: when(flag).then(lit(1)).otherwise(lit(0)).sum()
+
+(
+    db.table("nbbo_10s")
+    .select(
+        instants=count_star(),
+        locked=count_if(col("nbb") == col("nbo")),
+        crossed=count_if(col("nbb") > col("nbo")),
+        pct_locked_or_crossed=(
+            when(col("nbb") >= col("nbo")).then(lit(1.0)).otherwise(lit(0.0)).mean() * 100
+        ).round(2),
+    )
+    .to_pandas()
+)
 
 # %% [markdown]
 # ## 5. 統合の配当: 単独の取引所とのスプレッド比較
@@ -225,14 +222,19 @@ db.sql(
 # 統合する意味はここにあります。内側のスプレッドはどの単独の板よりも狭くなります。最良ビッドと
 # 最良アスクは、たいてい*別々の*取引所にいるからです。UNION ALL 1つで板を並べれば、セッションの
 # プロットで NBBO スプレッドが各取引所のスプレッドの下に貼り付いているのが見えます。
+#
+# `UNION` に対応する動詞はありません。ここが2つの面をつなぐ扉を通る場面です。すでに組み立てた
+# 取引所別の半分は `.sql()` が文字列にしてくれるので、UNION の部分だけを文字列で足します。
+# 許容差を f 文字列で埋め込む必要も、すでにあるクエリを手で書き直す必要もありません。
 
 # %%
+venue_spreads = QUOTING.group_by(col("venue").alias("book")).agg(
+    avg_spread_usd=(col("ask") - col("bid")).mean().round(4)
+)
+
 db.sql(
     f"""
-    SELECT venue AS book, round(avg(ask - bid), 4) AS avg_spread_usd
-    FROM asof_join('nbbo_grid', 'venue_quotes', 'ts', 'ts', 'venue', 'backward', {STALE_US})
-    WHERE bid IS NOT NULL AND ask IS NOT NULL
-    GROUP BY venue
+    {venue_spreads.sql()}
     UNION ALL
     SELECT 'NBBO', round(avg(nbo - nbb), 4) FROM nbbo_10s
     ORDER BY avg_spread_usd
@@ -242,20 +244,21 @@ db.sql(
 # %%
 import matplotlib.pyplot as plt
 
-venue_min = db.sql(
-    f"""
-    SELECT time_bucket('1m', ts) AS m, venue, avg(ask - bid) AS spread
-    FROM asof_join('nbbo_grid', 'venue_quotes', 'ts', 'ts', 'venue', 'backward', {STALE_US})
-    WHERE bid IS NOT NULL AND ask IS NOT NULL
-    GROUP BY m, venue ORDER BY m
-    """
-).to_pandas()
-nbbo_min = db.sql(
-    """
-    SELECT time_bucket('1m', ts) AS m, avg(nbo - nbb) AS spread
-    FROM nbbo_10s GROUP BY m ORDER BY m
-    """
-).to_pandas()
+MINUTE = time_bucket("1m", col("ts"))
+
+venue_min = (
+    QUOTING.group_by(MINUTE.alias("m"), "venue")
+    .agg(spread=(col("ask") - col("bid")).mean())
+    .sort("m")
+    .to_pandas()
+)
+nbbo_min = (
+    db.table("nbbo_10s")
+    .group_by(MINUTE.alias("m"))
+    .agg(spread=(col("nbo") - col("nbb")).mean())
+    .sort("m")
+    .to_pandas()
+)
 
 fig, ax = plt.subplots(figsize=(10, 4))
 for venue, g in venue_min.groupby("venue"):

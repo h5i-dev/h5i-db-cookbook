@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import h5i_db
+from h5i_db import col, count_star
 
 import cookbook_utils as cu
 
@@ -105,6 +106,8 @@ for v in db.versions("prices"):
 # 来ます。コードのズルではありません。
 
 # %%
+# arrival_delta() takes a SQL string (it re-runs the same text at two read
+# points), so this study stays a string end to end.
 SHARPE_SQL = """
 WITH d AS (
   SELECT ts, symbol, close,
@@ -149,10 +152,10 @@ report = db.arrival_delta(SHARPE_SQL, version=1)
 
 print(f"changed          : {report['changed']}")
 print(f"vacuous          : {report['vacuous']}")
-col = report["columns"][0]
-print(f"head             : {col['head']:.3f}   (what the backtest reported)")
-print(f"as-of v1         : {col['asof']:.3f}   (what it could actually have known)")
-print(f"delta            : {col['delta']:+.3f} Sharpe")
+metric = report["columns"][0]
+print(f"head             : {metric['head']:.3f}   (what the backtest reported)")
+print(f"as-of v1         : {metric['asof']:.3f}   (what it could actually have known)")
+print(f"delta            : {metric['delta']:+.3f} Sharpe")
 print("\nwithheld commits:")
 for w in report["withheld_versions"]:
     print(f"  {w['table']}: v{w['asof_version']} -> v{w['head_version']}")
@@ -261,8 +264,8 @@ assert LEAKY_SQL != SHARPE_SQL, "the leaky-signal substitution did not apply"
 
 leaky_report = db.arrival_delta(LEAKY_SQL, version=1)
 lc = leaky_report["columns"][0]
-inflation = lc["head"] - col["head"]
-print(f"leaky Sharpe     : {lc['head']:.2f}  (honest signal: {col['head']:.2f})")
+inflation = lc["head"] - metric["head"]
+print(f"leaky Sharpe     : {lc['head']:.2f}  (honest signal: {metric['head']:.2f})")
 print(f"inflation from the leak : {inflation:+.2f} Sharpe")
 print(f"arrival delta           : {lc['delta']:+.2f} Sharpe")
 print(f"vacuous                 : {leaky_report['vacuous']}")
@@ -286,9 +289,10 @@ print(f"vacuous                 : {leaky_report['vacuous']}")
 # %%
 decision = days[-60]
 cutoff = decision.strftime("%Y-%m-%dT%H:%M:%SZ")
-bound = f"WHERE ts <= TIMESTAMP '{cutoff}'"
-visible = db.sql(f"SELECT count(*) AS n FROM prices {bound}").to_pandas().n.iloc[0]
-total = db.sql("SELECT count(*) AS n FROM prices").to_pandas().n.iloc[0]
+
+n_rows = lambda frame: frame.select(count_star().alias("n")).to_pandas().n.iloc[0]
+visible = n_rows(db.table("prices").filter(col("ts") <= cutoff))
+total = n_rows(db.table("prices"))
 print(f"decision date {decision.date()}: {visible:,} of {total:,} rows readable")
 print(f"future rows hidden: {total - visible:,}")
 

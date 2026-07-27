@@ -16,6 +16,7 @@ executes it and writes the paired `.ipynb`.
 # %%
 import pyarrow as pa
 import h5i_db
+from h5i_db import col, time_bucket, vwap
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("<section>_<recipe>"), create=True)
@@ -25,6 +26,9 @@ Rules:
 - **Audience: professional quants.** Assume they know finance (don't explain
   what VWAP *is* beyond one line - show how to compute it well). Explain
   h5i-db concepts on first use in that recipe.
+- **Queries are builder-first**: `db.table(...)` + verbs, not a SQL string,
+  wherever the builder expresses the query cleanly. See the DataFrame builder
+  cheatsheet for what deliberately stays in `db.sql()`.
 - Markdown cell before every code cell: *why*, not *what*. Code comments only
   where genuinely non-obvious.
 - Each recipe is standalone and idempotent: `cu.fresh_db("name")` (wipes prior
@@ -161,6 +165,89 @@ db.close()
 Exceptions: `H5iError` base with `.code`, `.retryable`, `.hint`; subclasses
 `ConflictError, NotFoundError, InvalidInputError, PolicyError, CorruptionError,
 LimitError, TimeoutError, StorageError`.
+
+## DataFrame builder cheatsheet
+
+**Recipes are builder-first.** `db.table(...)` starts a lazy query you build
+with verbs; it compiles to SQL run through `db.sql()`, so it sees the same
+session, table functions and version pins. Prefer it over a SQL string
+wherever it expresses the query cleanly - it reads better and, for generated
+queries, removes a class of quoting bugs. Recipe 00/09 teaches it; 00/04 stays
+pure SQL on purpose (its subject *is* SQL).
+
+```python
+from h5i_db import col, lit, when, sql_expr, count_star, vwap, wavg, time_bucket
+
+db.table("trades")                          # FROM "trades" (snapshot-bound)
+db.table("trades", version=42)               # -> h5i('trades', 42); also
+db.table("trades", as_of="2026-07-01T00:00:00Z")   # snapshot="eod-..."
+
+.filter(*preds)        # ANDed; use & | ~ , NOT and/or/not, and parenthesize
+                       #   each comparison (& binds tighter than >)
+.select(*exprs, **named)          # replace projection; kwargs name the result
+.with_columns(*e, replace=None, **named)   # ADD columns; naming an existing
+                       #   one is an error unless you pass replace="name"
+.group_by(*keys).agg(*e, **named) / .count(name="count")
+.sort(by, descending=False)  .limit(n, offset=0)  .head(n)  .unique()
+.join(other, on=/left_on=/right_on=, how="inner", predicate=sql_expr(...))
+.join_asof(other, on=, by=, direction="backward", tolerance=us)
+.pipe(fn, *args)
+# terminals: .collect(timeout=, max_rows=) .to_pandas() .to_arrow()
+#            .to_polars() .sql() .explain() .schema()
+
+col("x"), lit(3), col("x", relation="l")     # l / r are the join-side aliases
+col("a").is_in([...]) .is_null() .is_not_null() .between(lo, hi) .like("A%")
+col("a").cast("DOUBLE") .abs() .log() .exp() .sqrt() .round(2) .coalesce(0)
+col("a").sum() .mean() .min() .max() .count() .n_unique() .std() .var()
+        .median() .quantile(q) .first("ts") .last("ts")   # bar open/close
+when(c).then(a).otherwise(b)      # a when/then chain is already an expression
+count_star(), vwap(price, size), wavg(weight, value)
+time_bucket("5m", col("ts"), timezone="America/New_York")   # or origin=...
+col("x").over(partition_by=, order_by=, rows=n | (pre, post), duration="30m")
+col("x").rolling_mean(20, order_by="ts", partition_by="symbol")
+#   also rolling_sum/min/max/std/var/count/mad/skew/kurt/rank/idxmax/idxmin,
+#   rolling_corr(other, ...), rolling_cov(other, ...), .ewma(alpha, order_by,
+#   partition_by). Unlike the rolling_* SQL sugar these DO partition.
+col("x").cs_rank(partition_by="ts") .cs_zscore(...) .cs_demean(...)
+        .cs_winsorize(lo, hi, partition_by="ts")
+sql_expr("approx_percentile_cont(price, 0.99)")     # raw fragment, verbatim
+```
+
+Gotchas that bite in recipes:
+- **Never alias a computed group key to an existing column name.**
+  `group_by(time_bucket('5m', col('ts')).alias('ts'))` renders `GROUP BY "ts"`,
+  which binds to the *raw* `ts` column - one group per row, silently wrong and
+  no error. Bucket to `bar`, then `.select(col("bar").alias("ts"), ...)` a
+  level down. (Verified 2026-07-26: 5,660 groups instead of 156.)
+- **`agg -> select(rename) -> sort -> select(aggregate)` generates invalid
+  SQL** - the rename level is dropped but its `ORDER BY` survives, so the
+  outer query references a name that no longer exists. Keep the trailing
+  `.sort()` at the call site instead of inside a reusable frame-builder
+  function. (h5i-db builder bug, found 2026-07-26, not yet reported upstream.)
+- **`time_bucket()` parses a narrower interval grammar than the SQL function.**
+  Only `<n>` + `s|m|h|d|w|mo|y`: `'1s'` yes, `'1sec'` and `'250ms'` raise
+  `InvalidInputError`. Sub-second widths need `sql_expr("time_bucket('250ms',
+  ts)")` or plain SQL.
+- **No `.lag()` / `.row_number()`.** Use the windowable escape hatch:
+  `sql_expr("lag(close)").over(partition_by="symbol", order_by="ts")`. Bind it
+  to a name and reuse it.
+- Expressions carry **SQL** semantics: `/` between integer columns truncates.
+  `col("size").cast("DOUBLE") / 100`.
+- A stage reading a column an earlier stage *computed* gets its own subquery
+  level, so `with_columns(a=...)` then `with_columns(b=col("a") ...)` is two
+  stages, not one. Aggregation, `LIMIT` and `DISTINCT` also close a level, and
+  a stage only sees what the one before it emitted.
+- `join()` aliases both sides `l` / `r` and does **not** dedupe column names -
+  project explicitly.
+- `join_asof()` needs plain, unpinned tables on both sides (the `asof_join`
+  table function takes names and reads at latest). Filter *after* the join.
+- `from h5i_db import col` collides with loop variables named `col` - rename
+  them (`for name in (...)`) in any recipe that imports it.
+
+Keep in `db.sql()` (no verb, and the string is clearer): `UNION ALL`, deep
+multi-CTE chains, scalar subqueries, `gapfill` / `resample` / `tail`, the
+`ASOF JOIN` keyword form over pinned tables, and anything whose *subject* is
+the SQL text itself (00/04, 03/10).
 
 ## SQL cheatsheet (DataFusion + h5i extensions)
 

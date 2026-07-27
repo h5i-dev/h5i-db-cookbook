@@ -18,6 +18,7 @@ import pandas as pd
 import pyarrow as pa
 
 import h5i_db
+from h5i_db import col, lit, sql_expr, time_bucket, when
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("alpha_ofi"), create=True)
@@ -90,23 +91,33 @@ db.create_table("quotes_qa", quotes.schema, time_column="ts", sort_key=["ts", "s
 db.append("quotes_qa", quotes_w, note="midday QA window + run-up")
 print(f"QA window: {len(trades_w):,} trades, {len(quotes_w):,} quotes")
 
-audit = db.sql(
-    """
-    WITH tq AS (
-        SELECT ts, symbol, price, size, side, bid, ask,
-               (bid + ask) / 2 AS mid,
-               lag(price) OVER (PARTITION BY symbol ORDER BY ts) AS prev_px
-        FROM asof_join('trades_qa', 'quotes_qa', 'ts', 'ts', 'symbol', 'backward', 5000000)
+def sign_of(x, prev):
+    """+1 uptick, -1 downtick, 0 unchanged - the tick test."""
+    return when(x > prev).then(lit(1)).when(x < prev).then(lit(-1)).otherwise(lit(0))
+
+
+PREV_PX = sql_expr("lag(price)").over(partition_by="symbol", order_by="ts")
+TRUE_SIGN = when(col("side") == "B").then(lit(1)).otherwise(lit(-1))
+
+audit = (
+    db.table("trades_qa")
+    .join_asof(db.table("quotes_qa"), on="ts", by="symbol", tolerance=5_000_000)
+    .select("ts", "symbol", "price", "size", "side",
+            mid=(col("bid") + col("ask")) / 2)
+    .with_columns(prev_px=PREV_PX)
+    .select(
+        "ts", "symbol", "mid",
+        lr_sign=when(col("price") > col("mid")).then(lit(1))
+        .when(col("price") < col("mid")).then(lit(-1))
+        .when(col("price") > col("prev_px")).then(lit(1))
+        .when(col("price") < col("prev_px")).then(lit(-1))
+        .otherwise(lit(0)),
+        tick_sign=sign_of(col("price"), col("prev_px")),
+        true_sign=TRUE_SIGN,
     )
-    SELECT ts, symbol, mid,
-           CASE WHEN price > mid THEN 1 WHEN price < mid THEN -1
-                WHEN price > prev_px THEN 1 WHEN price < prev_px THEN -1 ELSE 0 END AS lr_sign,
-           CASE WHEN price > prev_px THEN 1 WHEN price < prev_px THEN -1 ELSE 0 END AS tick_sign,
-           CASE WHEN side = 'B' THEN 1 ELSE -1 END AS true_sign
-    FROM tq
-    ORDER BY ts, symbol
-    """
-).to_pandas()
+    .sort(["ts", "symbol"])
+    .to_pandas()
+)
 assert len(audit) == len(trades_w), "asof_join must return one row per trade"
 
 # cross-check the ASOF lookup itself against pandas.merge_asof
@@ -141,20 +152,17 @@ for rule in ("lr_sign", "tick_sign"):
 # 高くつくので、1回で済ませ、コミットし、バージョンを付けておきたい作業です。
 
 # %%
-signed = db.sql(
-    """
-    WITH t AS (
-        SELECT ts, symbol, price, size, side,
-               lag(price) OVER (PARTITION BY symbol ORDER BY ts) AS prev_px
-        FROM trades
+signed = (
+    db.table("trades")
+    .with_columns(prev_px=PREV_PX)
+    .select(
+        "ts", "symbol", "price", "size",
+        tick_sign=sign_of(col("price"), col("prev_px")),
+        true_sign=TRUE_SIGN,
     )
-    SELECT ts, symbol, price, size,
-           CASE WHEN price > prev_px THEN 1 WHEN price < prev_px THEN -1 ELSE 0 END AS tick_sign,
-           CASE WHEN side = 'B' THEN 1 ELSE -1 END AS true_sign
-    FROM t
-    ORDER BY ts, symbol
-    """
-).to_arrow()
+    .sort(["ts", "symbol"])
+    .to_arrow()
+)
 
 full = signed.to_pandas()
 scored = full[full["tick_sign"] != 0]
@@ -181,19 +189,22 @@ db.append("signed_trades", signed.cast(signed_schema), note="tick-test + oracle 
 # `(buys - sells) / total`、そして `last_value(... ORDER BY ts)` の定番でバケットの終値を取ります。
 
 # %%
-trade_ofi = db.sql(
-    """
-    SELECT time_bucket('1m', ts) AS bar, symbol,
-           sum(CASE WHEN tick_sign > 0 THEN size ELSE 0 END) AS buy_vol,
-           sum(CASE WHEN tick_sign < 0 THEN size ELSE 0 END) AS sell_vol,
-           sum(CASE WHEN true_sign > 0 THEN size ELSE -size END) AS oracle_net,
-           sum(size) AS volume,
-           last_value(price ORDER BY ts) AS close
-    FROM signed_trades
-    GROUP BY bar, symbol
-    ORDER BY bar, symbol
-    """
-).to_pandas()
+BAR = time_bucket("1m", col("ts"))
+size_when = lambda flag: when(flag).then(col("size")).otherwise(lit(0)).sum()
+
+trade_ofi = (
+    db.table("signed_trades")
+    .group_by(BAR.alias("bar"), "symbol")
+    .agg(
+        buy_vol=size_when(col("tick_sign") > 0),
+        sell_vol=size_when(col("tick_sign") < 0),
+        oracle_net=when(col("true_sign") > 0).then(col("size")).otherwise(-col("size")).sum(),
+        volume=col("size").sum(),
+        close=col("price").last("ts"),
+    )
+    .sort(["bar", "symbol"])
+    .to_pandas()
+)
 trade_ofi["ofi"] = (trade_ofi["buy_vol"] - trade_ofi["sell_vol"]) / trade_ofi["volume"]
 trade_ofi["ofi_oracle"] = trade_ofi["oracle_net"] / trade_ofi["volume"]
 trade_ofi.head(4)
@@ -207,27 +218,31 @@ trade_ofi.head(4)
 # リターン用にバケットの終値ミッドを添えます。
 
 # %%
-quote_ofi = db.sql(
-    """
-    WITH q AS (
-        SELECT ts, symbol, bid, ask, bid_size, ask_size,
-               lag(bid)      OVER w AS pb,  lag(ask)      OVER w AS pa,
-               lag(bid_size) OVER w AS pbs, lag(ask_size) OVER w AS pas
-        FROM quotes
-        WINDOW w AS (PARTITION BY symbol ORDER BY ts)
+def prev(name: str):
+    return sql_expr(f"lag({name})").over(partition_by="symbol", order_by="ts")
+
+
+# Cont et al.: size added at the bid counts positive, size pulled counts
+# negative, mirrored on the ask. Four lagged comparisons per quote.
+keep = lambda flag, x: when(flag).then(x).otherwise(lit(0))
+
+quote_ofi = (
+    db.table("quotes")
+    .with_columns(pb=prev("bid"), pa=prev("ask"), pbs=prev("bid_size"), pas=prev("ask_size"))
+    .filter(col("pb").is_not_null())
+    .group_by(BAR.alias("bar"), "symbol")
+    .agg(
+        qofi=(
+            keep(col("bid") >= col("pb"), col("bid_size"))
+            - keep(col("bid") <= col("pb"), col("pbs"))
+            - keep(col("ask") <= col("pa"), col("ask_size"))
+            + keep(col("ask") >= col("pa"), col("pas"))
+        ).sum(),
+        mid_close=((col("bid") + col("ask")) / 2).last("ts"),
     )
-    SELECT time_bucket('1m', ts) AS bar, symbol,
-           sum(  CASE WHEN bid >= pb THEN bid_size ELSE 0 END
-               - CASE WHEN bid <= pb THEN pbs      ELSE 0 END
-               - CASE WHEN ask <= pa THEN ask_size ELSE 0 END
-               + CASE WHEN ask >= pa THEN pas      ELSE 0 END) AS qofi,
-           last_value((bid + ask) / 2 ORDER BY ts) AS mid_close
-    FROM q
-    WHERE pb IS NOT NULL
-    GROUP BY bar, symbol
-    ORDER BY bar, symbol
-    """
-).to_pandas()
+    .sort(["bar", "symbol"])
+    .to_pandas()
+)
 quote_ofi.head(4)
 
 # %% [markdown]

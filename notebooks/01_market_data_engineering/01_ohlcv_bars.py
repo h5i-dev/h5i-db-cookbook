@@ -23,6 +23,7 @@ import pyarrow as pa
 import matplotlib.pyplot as plt
 
 import h5i_db
+from h5i_db import col, count_star, lit, time_bucket, vwap
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("mde_ohlcv"), create=True)
@@ -56,39 +57,55 @@ db.append("trades", trades, note="week of ticks")["rows_total"]
 # %% [markdown]
 # ## 2. Bars at any width
 #
-# One statement per bar width. The idioms that matter:
+# The bar rollup is one function of the width, so we build it once and call
+# it - the payoff of a query that is a Python value rather than a string.
+# The idioms that matter:
 #
 # - `time_bucket('<width>', ts)` floors each tick to its bucket - widths like
 #   `'1m'`, `'5m'`, `'1h'` (also `'1d'`, `'1mo'`, ...);
-# - `first_value(price ORDER BY ts)` / `last_value(price ORDER BY ts)` inside
-#   `GROUP BY` give open/close by *event time*, not by accident of row order -
-#   no self-joins;
+# - `.first("ts")` / `.last("ts")` are `first_value(price ORDER BY ts)` and
+#   its mirror: open and close by *event time*, not by accident of row
+#   order - no self-joins;
 # - `vwap(price, size)` is a native aggregate.
+#
+# One naming rule to internalize: never alias a computed group key to the
+# name of a column that already exists. `GROUP BY "ts"` would bind to the raw
+# `ts` column rather than the bucket - one group per tick, silently. Bucket
+# to `bar`, then rename in a following `select`, which lands a level down
+# where the name is free.
 
 # %%
-def bar_query(width: str) -> str:
-    return f"""
-        SELECT time_bucket('{width}', ts) AS ts,
-               symbol,
-               first_value(price ORDER BY ts) AS open,
-               max(price)                     AS high,
-               min(price)                     AS low,
-               last_value(price ORDER BY ts)  AS close,
-               sum(size)                      AS volume,
-               vwap(price, size)              AS vwap,
-               count(*)                       AS n_trades
-        FROM trades
-        GROUP BY 1, 2
-        ORDER BY 1, 2
-    """
+def bars(width: str):
+    return (
+        db.table("trades")
+        .group_by(time_bucket(width, col("ts")).alias("bar"), "symbol")
+        .agg(
+            open=col("price").first("ts"),
+            high=col("price").max(),
+            low=col("price").min(),
+            close=col("price").last("ts"),
+            volume=col("size").sum(),
+            vwap=vwap(col("price"), col("size")),
+            n_trades=count_star(),
+        )
+        .select(
+            col("bar").alias("ts"),
+            "symbol", "open", "high", "low", "close", "volume", "vwap", "n_trades",
+        )
+    )
 
 
-bars_5m = db.sql(bar_query("5m")).to_pandas()
+bars_5m = bars("5m").sort(["ts", "symbol"]).to_pandas()
 bars_5m.head(6)
+
+# %% [markdown]
+# Counting the bars at each width just extends the same frame - the
+# aggregation closes a level, so a `count(*)` on top of it nests as a
+# subquery without any string surgery:
 
 # %%
 for width in ("1m", "5m", "1h"):
-    n = db.sql(f"SELECT count(*) AS n FROM ({bar_query(width)})").to_pandas()["n"][0]
+    n = bars(width).select(count_star().alias("n")).to_pandas()["n"][0]
     print(f"{width:>3} bars: {n:,}")
 
 # %% [markdown]
@@ -103,16 +120,16 @@ for width in ("1m", "5m", "1h"):
 # UTC offset would drift by an hour.
 
 # %%
-db.sql(
-    """
-    SELECT time_bucket('1d', ts)                     AS day_utc,
-           time_bucket('1d', ts, 'America/New_York') AS day_new_york,
-           count(*)                                  AS n_trades
-    FROM trades
-    GROUP BY 1, 2
-    ORDER BY 1
-    """
-).to_pandas()
+(
+    db.table("trades")
+    .group_by(
+        time_bucket("1d", col("ts")).alias("day_utc"),
+        time_bucket("1d", col("ts"), timezone="America/New_York").alias("day_new_york"),
+    )
+    .agg(n_trades=count_star())
+    .sort("day_utc")
+    .to_pandas()
+)
 
 # %% [markdown]
 # Where the bucket choice changes the *numbers*, not just the labels, is any
@@ -155,16 +172,18 @@ db.create_table("fut_trades", fut_schema, time_column="ts", sort_key=["ts"])
 db.append("fut_trades", fut.cast(fut_schema))
 
 schemes = {
-    "UTC day": "time_bucket('1d', ts)",
-    "New York day": "time_bucket('1d', ts, 'America/New_York')",
-    "session day": "time_bucket('1d', ts, '2026-06-01T22:00:00Z')",
+    "UTC day": time_bucket("1d", col("ts")),
+    "New York day": time_bucket("1d", col("ts"), timezone="America/New_York"),
+    "session day": time_bucket("1d", col("ts"), origin="2026-06-01T22:00:00Z"),
 }
 pd.concat(
-    db.sql(
-        f"SELECT '{label}' AS scheme, {expr} AS bar_start, count(*) AS n_trades "
-        "FROM fut_trades GROUP BY 1, 2 ORDER BY 2"
-    ).to_pandas()
-    for label, expr in schemes.items()
+    db.table("fut_trades")
+    .group_by(bucket.alias("bar_start"))
+    .agg(n_trades=count_star())
+    .select(scheme=lit(label), bar_start=col("bar_start"), n_trades=col("n_trades"))
+    .sort("bar_start")
+    .to_pandas()
+    for label, bucket in schemes.items()
 ).reset_index(drop=True)
 
 # %% [markdown]
@@ -196,7 +215,7 @@ bar_schema = pa.schema(
 )
 db.create_table("bars_5m", bar_schema, time_column="ts", sort_key=["ts", "symbol"])
 commit = db.write(
-    "bars_5m", db.sql(bar_query("5m")).to_arrow().cast(bar_schema),
+    "bars_5m", bars("5m").sort(["ts", "symbol"]).to_arrow().cast(bar_schema),
     note="5m bars built from trades v1",
 )
 {k: commit[k] for k in ("table", "sequence", "op", "rows_total")}
@@ -208,14 +227,16 @@ commit = db.write(
 # VWAP with the high–low range as a band.
 
 # %%
-one_day = db.sql(
-    """
-    SELECT ts, high, low, close, vwap
-    FROM bars_5m
-    WHERE symbol = 'AAPL' AND time_bucket('1d', ts) = '2026-06-02T00:00:00Z'
-    ORDER BY ts
-    """
-).to_pandas()
+one_day = (
+    db.table("bars_5m")
+    .filter(
+        col("symbol") == "AAPL",
+        time_bucket("1d", col("ts")) == "2026-06-02T00:00:00Z",
+    )
+    .select("ts", "high", "low", "close", "vwap")
+    .sort("ts")
+    .to_pandas()
+)
 
 fig, ax = plt.subplots(figsize=(10, 4))
 ax.fill_between(one_day["ts"], one_day["low"], one_day["high"],
@@ -254,23 +275,24 @@ ref = (
 )
 ref["vwap"] = ref["pv"] / ref["volume"]
 
-stored = db.sql("SELECT * FROM bars_5m ORDER BY symbol, ts").to_pandas()
+stored = db.table("bars_5m").sort(["symbol", "ts"]).to_pandas()
 merged = stored.merge(ref, on=["symbol", "ts"], suffixes=("", "_ref"))
 assert len(merged) == len(stored) == len(ref)
-for col in ("open", "high", "low", "close", "volume", "vwap", "n_trades"):
-    assert np.allclose(merged[col], merged[f"{col}_ref"]), col
+for field in ("open", "high", "low", "close", "volume", "vwap", "n_trades"):
+    assert np.allclose(merged[field], merged[f"{field}_ref"]), field
 print(f"all {len(merged):,} bars match pandas across OHLC, volume, VWAP, count")
 
 # %% [markdown]
 # ## Takeaways
 #
-# - Ticks to OHLCV+VWAP bars is one SQL statement: `time_bucket` +
-#   `first_value/last_value(... ORDER BY ts)` + `vwap`, streaming over
-#   time-sorted storage - and it matches a pandas reference exactly.
-# - `time_bucket`'s third argument does session alignment: an IANA timezone
-#   for DST-safe calendar days, an origin timestamp for overnight sessions
-#   that straddle midnight. Naive UTC days silently split Globex-style
-#   sessions in two.
+# - Ticks to OHLCV+VWAP bars is one aggregation: `time_bucket` +
+#   `.first("ts")`/`.last("ts")` + `vwap`, streaming over time-sorted
+#   storage - and it matches a pandas reference exactly.
+# - Writing it as a `bars(width)` function rather than a SQL template means
+#   every width, and the row counts on top of them, come from one definition.
+# - `time_bucket`'s third argument does session alignment: `timezone=` for
+#   DST-safe calendar days, `origin=` for overnight sessions that straddle
+#   midnight. Naive UTC days silently split Globex-style sessions in two.
 # - Derived bars belong in the database: `db.write` on `bars_5m` gives you
 #   atomic rebuilds with the full build history retained - every downstream
 #   consumer can pin the bar version it was computed from.

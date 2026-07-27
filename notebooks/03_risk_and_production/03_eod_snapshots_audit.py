@@ -17,6 +17,7 @@
 import pandas as pd
 import pyarrow as pa
 import h5i_db
+from h5i_db import col, count_star, sql_expr
 
 import cookbook_utils as cu
 
@@ -75,14 +76,18 @@ all_trades = cu.make_trades(days=3, trades_per_day=20_000).to_pandas()
 all_trades["day"] = all_trades["ts"].dt.date
 
 def eod_checks(day: str) -> dict:
-    row = db.sql(
-        f"""
-        SELECT count(*) AS rows, count(DISTINCT symbol) AS symbols,
-               min(price) AS px_min, max(price) AS px_max
-        FROM trades
-        WHERE ts >= '{day}T00:00:00Z' AND ts < '{day}T23:59:59Z'
-        """
-    ).to_pandas().iloc[0]
+    row = (
+        db.table("trades")
+        .filter(col("ts") >= f"{day}T00:00:00Z", col("ts") < f"{day}T23:59:59Z")
+        .select(
+            rows=count_star(),
+            symbols=col("symbol").n_unique(),
+            px_min=col("price").min(),
+            px_max=col("price").max(),
+        )
+        .to_pandas()
+        .iloc[0]
+    )
     return {
         "rows": int(row["rows"]),
         "symbols_ok": int(row["symbols"]) == 3,
@@ -122,12 +127,13 @@ for day, chunk in all_trades.groupby("day", sort=True):
 last_snap
 
 # %%
-db.sql(
-    """
-    SELECT ts, snapshot_name, pinned_sequence, substr(manifest_checksum, 1, 12) AS checksum
-    FROM snapshot_log ORDER BY ts
-    """
-).to_pandas()
+(
+    db.table("snapshot_log")
+    .select("ts", "snapshot_name", "pinned_sequence",
+            checksum=sql_expr("substr(manifest_checksum, 1, 12)"))
+    .sort("ts")
+    .to_pandas()
+)
 
 # %% [markdown]
 # ## 3. "What did you know on 2026-06-02?" - three ways to answer
@@ -138,20 +144,26 @@ db.sql(
 # All three are O(1) manifest lookups, not replays.
 
 # %%
-by_name = db.sql(
-    """
-    SELECT count(*) AS rows, max(ts) AS last_trade,
-           round(sum(price * size) / sum(size), 2) AS vwap_all
-    FROM h5i('trades', 'eod-2026-06-02')
-    """
-).to_pandas()
+by_name = (
+    db.table("trades", snapshot="eod-2026-06-02")
+    .select(
+        rows=count_star(),
+        last_trade=col("ts").max(),
+        vwap_all=((col("price") * col("size")).sum() / col("size").sum()).round(2),
+    )
+    .to_pandas()
+)
 by_name
 
 # %%
 # By version number: the log row tells us which sequence the name pins.
-pinned = db.sql(
-    "SELECT pinned_sequence FROM snapshot_log WHERE snapshot_name = 'eod-2026-06-02'"
-).to_pandas()["pinned_sequence"].iloc[0]
+pinned = (
+    db.table("snapshot_log")
+    .filter(col("snapshot_name") == "eod-2026-06-02")
+    .select("pinned_sequence")
+    .to_pandas()["pinned_sequence"]
+    .iloc[0]
+)
 by_version = db.read("trades", version=int(pinned))
 
 # By commit wall-clock time: the append's committed_at_ns from versions().
@@ -172,21 +184,30 @@ assert by_version.num_rows == by_time.num_rows == int(by_name["rows"].iloc[0])
 # moved.
 
 # %%
-db.sql(
-    """
-    SELECT d3.symbol,
-           d3.n - d2.n                      AS trades_added,
-           d2.last_px                       AS close_jun02,
-           d3.last_px                       AS close_jun03,
-           round(d3.last_px / d2.last_px - 1, 4) AS px_chg
-    FROM (SELECT symbol, count(*) AS n, last_value(price ORDER BY ts) AS last_px
-          FROM h5i('trades', 'eod-2026-06-03') GROUP BY symbol) d3
-    JOIN (SELECT symbol, count(*) AS n, last_value(price ORDER BY ts) AS last_px
-          FROM h5i('trades', 'eod-2026-06-02') GROUP BY symbol) d2
-    USING (symbol)
-    ORDER BY symbol
-    """
-).to_pandas()
+def per_symbol(snapshot: str):
+    return (
+        db.table("trades", snapshot=snapshot)
+        .group_by("symbol")
+        .agg(n=count_star(), last_px=col("price").last("ts"))
+    )
+
+
+d3, d2 = per_symbol("eod-2026-06-03"), per_symbol("eod-2026-06-02")
+n3, n2 = col("n", relation="l"), col("n", relation="r")
+px3, px2 = col("last_px", relation="l"), col("last_px", relation="r")
+
+(
+    d3.join(d2, on="symbol")
+    .select(
+        symbol=col("symbol", relation="l"),
+        trades_added=n3 - n2,
+        close_jun02=px2,
+        close_jun03=px3,
+        px_chg=(px3 / px2 - 1).round(4),
+    )
+    .sort("symbol")
+    .to_pandas()
+)
 
 # %% [markdown]
 # ## 5. Integrity attestation

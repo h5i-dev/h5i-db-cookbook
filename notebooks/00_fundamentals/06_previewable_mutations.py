@@ -22,6 +22,7 @@ import pandas as pd
 import pyarrow as pa
 
 import h5i_db
+from h5i_db import col, sql_expr, time_bucket
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("00_mutations"), create=True)
@@ -57,29 +58,42 @@ db.append("trades", corrupted, note="raw feed capture, days 1-2")
 print(f"{glitch.sum()} glitch prints, {scaling.sum()} scaled prints, {len(df):,} rows total")
 
 # %% [markdown]
-# ## 2. Find the damage with SQL
+# ## 2. Find the damage
 #
 # A robust screen: compare every print to its symbol's daily median
 # (`approx_percentile_cont`). The corrupt rows sit at ~10x their median; the
 # median itself barely moves because the corrupt fraction is small. This is
 # why medians, not means, anchor outlier screens.
+#
+# We will run this detector twice - now, and again after the repair - so it
+# is written once as a function of the read point. The `trades` frame feeds
+# both sides of its own join: once grouped into daily medians, once as the
+# row-level left side.
 
 # %%
-flagged = db.sql(
-    """
-    WITH med AS (
-        SELECT symbol, time_bucket('1d', ts) AS day,
-               approx_percentile_cont(price, 0.5) AS med_px
-        FROM trades GROUP BY symbol, day
-    )
-    SELECT t.ts, t.symbol, t.price, t.price / m.med_px AS x_median
-    FROM trades t
-    JOIN med m ON t.symbol = m.symbol AND time_bucket('1d', t.ts) = m.day
-    WHERE t.price > 3 * m.med_px
-    ORDER BY t.ts
-    """
-).to_pandas()
+DAY = time_bucket("1d", col("ts"))
 
+
+def outliers(version=None):
+    src = db.table("trades", version=version)
+    med = src.group_by("symbol", DAY.alias("day")).agg(
+        med_px=sql_expr("approx_percentile_cont(price, 0.5)")
+    )
+    return (
+        src.with_columns(day=DAY)
+        .join(med, on=["symbol", "day"])
+        .filter(col("price", relation="l") > 3 * col("med_px", relation="r"))
+        .select(
+            ts=col("ts", relation="l"),
+            symbol=col("symbol", relation="l"),
+            price=col("price", relation="l"),
+            x_median=col("price", relation="l") / col("med_px", relation="r"),
+        )
+        .sort("ts")
+    )
+
+
+flagged = outliers().to_pandas()
 flagged.groupby([flagged["ts"].dt.floor("1D").rename("day"), "symbol"]).size()
 
 # %% [markdown]
@@ -168,16 +182,7 @@ fix.after_sample.to_pandas().query("symbol == 'MSFT'").head(4)
 
 # %%
 fix.apply()
-assert len(db.sql(
-    """
-    WITH med AS (SELECT symbol, time_bucket('1d', ts) AS day,
-                        approx_percentile_cont(price, 0.5) AS med_px
-                 FROM trades GROUP BY symbol, day)
-    SELECT t.ts FROM trades t
-    JOIN med m ON t.symbol = m.symbol AND time_bucket('1d', t.ts) = m.day
-    WHERE t.price > 3 * m.med_px
-    """
-)) == 0
+assert len(outliers().collect()) == 0
 print("detector re-run: 0 outliers remaining")
 
 # %% [markdown]
@@ -191,20 +196,21 @@ pd.DataFrame(db.versions("trades"))[["sequence", "op", "rows", "note"]]
 # %%
 import matplotlib.pyplot as plt
 
-before = db.sql(
-    """
-    SELECT ts, price FROM h5i('trades', 1)
-    WHERE symbol = 'MSFT' AND ts >= '2026-06-02T13:50:00Z' AND ts < '2026-06-02T14:20:00Z'
-    ORDER BY ts
-    """
-).to_pandas()
-after = db.sql(
-    """
-    SELECT ts, price FROM trades
-    WHERE symbol = 'MSFT' AND ts >= '2026-06-02T13:50:00Z' AND ts < '2026-06-02T14:20:00Z'
-    ORDER BY ts
-    """
-).to_pandas()
+def msft_window(version=None):
+    return (
+        db.table("trades", version=version)
+        .filter(
+            col("symbol") == "MSFT",
+            col("ts") >= "2026-06-02T13:50:00Z",
+            col("ts") < "2026-06-02T14:20:00Z",
+        )
+        .select("ts", "price")
+        .sort("ts")
+        .to_pandas()
+    )
+
+
+before, after = msft_window(version=1), msft_window()
 
 fig, ax = plt.subplots(figsize=(10, 4))
 ax.plot(before["ts"], before["price"], lw=0.8, color="tab:red", label="version 1 (raw capture)")

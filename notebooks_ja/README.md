@@ -10,13 +10,19 @@
 保存するので、2回目以降はオフラインで再現できます。ティックレベルのデータが要るレシピは、
 シードを固定した現実的な合成データ生成器（`cookbook_utils/`）を使います。
 
+クエリは SQL 文字列ではなく、遅延 DataFrame ビルダ（`db.table(...)` と動詞）で書いています。
+変数に持てるクエリのほうが、読むにも使い回すにも生成するにも楽だからです。ビルダは SQL に
+コンパイルされ、`.sql()` で生成物がそのまま見えるので、隠れているものはありません。ビルダ自体は
+レシピ09が扱い、レシピ04は SQL だけのツアーです。対応する動詞がないクエリ（`UNION`、`gapfill`、
+`tail`、深い多段 CTE）はそのまま SQL で書いています。
+
 ## レシピ一覧
 
 ### 00 - 基礎
 
 | レシピ | 学べること |
 |---|---|
-| [01 クイックスタート](00_fundamentals/01_quickstart.ipynb) | DB を作り、ティックを取り込み、最初の SQL とタイムトラベルまで5分 |
+| [01 クイックスタート](00_fundamentals/01_quickstart.ipynb) | DB を作り、ティックを取り込み、最初のクエリとタイムトラベルまで5分 |
 | [02 マーケットデータのスキーマ設計](00_fundamentals/02_designing_market_data_schemas.ipynb) | 約定・気配・バーのスキーマ、時刻列、ソートキー、Arrow の型 |
 | [03 取り込みのパターン](00_fundamentals/03_ingestion_patterns.ipynb) | Parquet／CSV／pandas／polars から。append と write、バッチ化、衝突処理 |
 | [04 クオンツのための SQL ツアー](00_fundamentals/04_sql_tour_for_quants.ipynb) | DataFusion SQL: ウィンドウ、CTE、`time_bucket`、`vwap`、`ewma`、ローリングの糖衣 |
@@ -24,6 +30,7 @@
 | [06 プレビューできる変更](00_fundamentals/06_previewable_mutations.ipynb) | plan → 検分 → apply／discard。変更ポリシーによるゲート |
 | [07 ストリーミング append と tail](00_fundamentals/07_streaming_appends_and_tail.ipynb) | ライブフィードの模擬、追記のみの tail、インクリメンタルな消費者 |
 | [08 メンテナンス](00_fundamentals/08_maintenance.ipynb) | snapshot、compact、vacuum、verify でストアを健全に保つ |
+| [09 DataFrame ビルダ](00_fundamentals/09_dataframe_builder.ipynb) | `db.table(...)` と動詞。クエリを Python の値として扱い、`.sql()` で SQL へ戻る |
 
 ### 01 - マーケットデータエンジニアリング
 

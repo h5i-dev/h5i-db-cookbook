@@ -11,12 +11,13 @@
 #
 # 1. create a database and a `trades` table,
 # 2. ingest a few days of tick data,
-# 3. compute minute bars with VWAP in one SQL statement,
+# 3. compute minute bars with VWAP in one query,
 # 4. travel back in time to a previous version of the table.
 
 # %%
 import h5i_db
 import pyarrow as pa
+from h5i_db import col, count_star, time_bucket, vwap
 
 import cookbook_utils as cu
 
@@ -61,29 +62,41 @@ commit = db.append("trades", trades)
 commit
 
 # %% [markdown]
-# ## 3. Query it with SQL
+# ## 3. Query it
 #
-# Full SQL via DataFusion, plus finance-native operators. One statement turns
-# 100k+ ticks into minute bars with VWAP - and because segments are stored
-# time-sorted, this streams instead of sorting.
+# There are two surfaces on the same engine. `db.table(...)` starts a **lazy
+# query** you build with method calls - nothing runs until `.to_pandas()` -
+# and `db.sql(...)` takes a string. Both go through DataFusion with the same
+# finance-native operators: `time_bucket` for the bar grid,
+# `first_value/last_value(... ORDER BY ts)` for open and close by event time,
+# and `vwap` as a native aggregate. Because segments are stored time-sorted,
+# this streams instead of sorting.
 
 # %%
-bars = db.sql(
-    """
-    SELECT time_bucket('1m', ts) AS bar,
-           symbol,
-           first_value(price ORDER BY ts) AS open,
-           max(price)                     AS high,
-           min(price)                     AS low,
-           last_value(price ORDER BY ts)  AS close,
-           sum(size)                      AS volume,
-           vwap(price, size)              AS vwap
-    FROM trades
-    GROUP BY bar, symbol
-    ORDER BY bar, symbol
-    """
-).to_pandas()
+bar_query = (
+    db.table("trades")
+    .group_by(time_bucket("1m", col("ts")).alias("bar"), "symbol")
+    .agg(
+        col("price").first("ts").alias("open"),
+        col("price").max().alias("high"),
+        col("price").min().alias("low"),
+        col("price").last("ts").alias("close"),
+        col("size").sum().alias("volume"),
+        vwap(col("price"), col("size")).alias("vwap"),
+    )
+    .sort(["bar", "symbol"])
+)
+bars = bar_query.to_pandas()
 bars.head(8)
+
+# %% [markdown]
+# The builder is a compiler, not a second engine - `.sql()` shows exactly
+# what it handed to DataFusion, and that string works verbatim in `db.sql()`.
+# Recipe 09 covers the builder properly; the rest of this cookbook uses it by
+# default and drops to SQL where a string reads better.
+
+# %%
+print(bar_query.sql())
 
 # %%
 import matplotlib.pyplot as plt
@@ -115,25 +128,30 @@ db.append("trades", day4, note="day 4 feed")
 # %%
 v1_rows = len(db.read("trades", version=1))
 v2_rows = len(db.read("trades", version=2))
-latest = db.sql("SELECT count(*) AS n FROM trades").to_pandas()["n"][0]
+latest = db.table("trades").select(count_star().alias("n")).to_pandas()["n"][0]
 print(f"version 1: {v1_rows:,} rows\nversion 2: {v2_rows:,} rows\nlatest:    {latest:,} rows")
 
 # %% [markdown]
-# Time travel works inside SQL too, via the `h5i()` table function - query an
-# old version and the live table in the same statement:
+# Time travel works inside a query too, so an old version and the live table
+# can meet in one statement. Pass a read point to `db.table(...)` - it lowers
+# to the `h5i()` table function - and write the query once as a function of
+# the version:
 
 # %%
-db.sql(
-    """
-    SELECT now.symbol,
-           now.n  - was.n  AS trades_added,
-           now.mx - was.mx AS ts_advanced_by
-    FROM      (SELECT symbol, count(*) AS n, max(ts) AS mx FROM trades GROUP BY symbol) now
-    JOIN      (SELECT symbol, count(*) AS n, max(ts) AS mx FROM h5i('trades', 1) GROUP BY symbol) was
-    USING (symbol)
-    ORDER BY symbol
-    """
-).to_pandas()
+def per_symbol(version=None):
+    return (
+        db.table("trades", version=version)
+        .group_by("symbol")
+        .agg(count_star().alias("n"), col("ts").max().alias("mx"))
+    )
+
+
+was, now = per_symbol(1), per_symbol()
+now.join(was, on="symbol").select(
+    symbol=col("symbol", relation="l"),
+    trades_added=col("n", relation="l") - col("n", relation="r"),
+    ts_advanced_by=col("mx", relation="l") - col("mx", relation="r"),
+).sort("symbol").to_pandas()
 
 # %% [markdown]
 # ## Takeaways
@@ -142,10 +160,12 @@ db.sql(
 #   No server, no daemon - `pip install`, `Database(path, create=True)`, done.
 # - `append` is an atomic commit with feed semantics (strictly ordered in
 #   time). Bad ingest? Every previous version is still there.
-# - One SQL statement gets you OHLCV + VWAP bars, streaming on sorted storage.
-# - Time travel is first-class: `db.read(v)` in Python, `h5i('table', v)` in
-#   SQL, both O(1). This becomes the backbone of reproducible research -
-#   see recipe 05.
+# - One query gets you OHLCV + VWAP bars, streaming on sorted storage -
+#   built with `db.table(...)` verbs, or written as SQL; `.sql()` is the door
+#   between them (recipe 09).
+# - Time travel is first-class: `db.read(v)` in Python, `db.table(v)` in the
+#   builder, `h5i('table', v)` in SQL, all O(1). This becomes the backbone of
+#   reproducible research - see recipe 05.
 
 # %%
 db.close()

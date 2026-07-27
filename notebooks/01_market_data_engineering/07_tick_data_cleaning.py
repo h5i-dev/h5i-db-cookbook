@@ -18,6 +18,7 @@ import pandas as pd
 import pyarrow as pa
 
 import h5i_db
+from h5i_db import col, count_star, lit, sql_expr, time_bucket, when
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("mde_cleaning"), create=True)
@@ -101,25 +102,41 @@ print("as-delivered head version:", V_RAW)
 # around:
 
 # %%
-db.sql("SELECT symbol, count(*) AS zero_price_prints FROM trades WHERE price <= 0 GROUP BY symbol").to_pandas()
+(
+    db.table("trades")
+    .filter(col("price") <= 0)
+    .group_by("symbol")
+    .agg(zero_price_prints=count_star())
+    .to_pandas()
+)
 
 # %%
-fat = db.sql(
-    """
-    WITH ref AS (
-        SELECT time_bucket('5m', ts) AS w, symbol,
-               approx_percentile_cont(price, 0.5) AS med
-        FROM trades WHERE price > 0
-        GROUP BY w, symbol
+W5 = time_bucket("5m", col("ts"))
+
+ref = (
+    db.table("trades")
+    .filter(col("price") > 0)
+    .group_by(W5.alias("w"), "symbol")
+    .agg(med=sql_expr("approx_percentile_cont(price, 0.5)"))
+)
+
+px, ref_med = col("price", relation="l"), col("med", relation="r")
+
+fat = (
+    db.table("trades")
+    .with_columns(w=W5)
+    .join(ref, on=["w", "symbol"])
+    .filter(px > 3 * ref_med)
+    .select(
+        ts=col("ts", relation="l"),
+        symbol=col("symbol", relation="l"),
+        price=px,
+        local_median=ref_med.round(2),
+        ratio=(px / ref_med).round(1),
     )
-    SELECT t.ts, t.symbol, t.price, round(r.med, 2) AS local_median,
-           round(t.price / r.med, 1) AS ratio
-    FROM trades t
-    JOIN ref r ON time_bucket('5m', t.ts) = r.w AND t.symbol = r.symbol
-    WHERE t.price > 3 * r.med
-    ORDER BY t.ts
-    """
-).to_pandas()
+    .sort("ts")
+    .to_pandas()
+)
 print(f"{len(fat)} suspected fat fingers, ratios ~{fat['ratio'].min()}-{fat['ratio'].max()}x")
 fat.head(5)
 
@@ -128,26 +145,25 @@ fat.head(5)
 # `EXTRACT(hour ...)` predicate against the 13:30-20:00 UTC session:
 
 # %%
-db.sql(
-    """
-    SELECT count(*) AS dup_groups, sum(n - 1) AS excess_rows
-    FROM (
-        SELECT count(*) AS n
-        FROM trades
-        GROUP BY ts, symbol, price, size, exchange, side
-        HAVING count(*) > 1
-    )
-    """
-).to_pandas()
+(
+    db.table("trades")
+    .group_by("ts", "symbol", "price", "size", "exchange", "side")
+    .count("n")
+    .filter(col("n") > 1)  # the HAVING, one level up
+    .select(dup_groups=count_star(), excess_rows=(col("n") - 1).sum())
+    .to_pandas()
+)
 
 # %%
-db.sql(
-    """
-    SELECT min(ts) AS first_print, max(ts) AS last_print, count(*) AS n
-    FROM trades
-    WHERE EXTRACT(hour FROM ts) >= 20 OR EXTRACT(hour FROM ts) < 13
-    """
-).to_pandas()
+HOUR = sql_expr("EXTRACT(hour FROM ts)")
+AFTER_HOURS = (HOUR >= 20) | (HOUR < 13)
+
+(
+    db.table("trades")
+    .filter(AFTER_HOURS)
+    .select(first_print=col("ts").min(), last_print=col("ts").max(), n=count_star())
+    .to_pandas()
+)
 
 # %% [markdown]
 # ## 3. Fix 1 - delete the after-hours block, with a preview
@@ -182,13 +198,12 @@ plan.apply()
 # %%
 W0_US, W1_US = int(W0.value // 1_000), int(W1.value // 1_000)
 
-win = db.sql(
-    f"""
-    SELECT * FROM trades
-    WHERE ts >= to_timestamp_micros({W0_US}) AND ts < to_timestamp_micros({W1_US})
-    ORDER BY ts, symbol
-    """
-).to_pandas()
+win = (
+    db.table("trades")
+    .filter(col("ts") >= W0.isoformat(), col("ts") < W1.isoformat())
+    .sort(["ts", "symbol"])
+    .to_pandas()
+)
 
 med = win[win["price"] > 0].groupby("symbol")["price"].median()
 ratio = win["price"] / win["symbol"].map(med)
@@ -220,14 +235,14 @@ plan.apply()
 V_CLEAN = db.versions("trades")[-1]["sequence"]
 
 # All three detection queries now come back empty:
-db.sql(
-    """
-    SELECT sum(CASE WHEN price <= 0 THEN 1 ELSE 0 END)                              AS zeros,
-           sum(CASE WHEN EXTRACT(hour FROM ts) >= 20 OR EXTRACT(hour FROM ts) < 13
-                    THEN 1 ELSE 0 END)                                              AS after_hours
-    FROM trades
-    """
-).to_pandas()
+(
+    db.table("trades")
+    .select(
+        zeros=when(col("price") <= 0).then(lit(1)).otherwise(lit(0)).sum(),
+        after_hours=when(AFTER_HOURS).then(lit(1)).otherwise(lit(0)).sum(),
+    )
+    .to_pandas()
+)
 
 # %% [markdown]
 # ## 5. The audit trail: every correction is a version
@@ -242,33 +257,36 @@ db.sql(
 [{k: v[k] for k in ("sequence", "op", "rows", "note") if k in v} for v in db.versions("trades")]
 
 # %%
-db.sql(
-    f"""
-    SELECT count(*) AS prints_repriced,
-           round(max(was.price / now.price), 1) AS max_correction_ratio
-    FROM trades now
-    JOIN h5i('trades', {V_RAW}) was
-      ON now.ts = was.ts AND now.symbol = was.symbol AND now.size = was.size
-     AND now.exchange = was.exchange AND now.side = was.side
-    WHERE now.price <> was.price
-    """
-).to_pandas()
+now_px, was_px = col("price", relation="l"), col("price", relation="r")
+
+(
+    db.table("trades")  # head: repaired
+    .join(db.table("trades", version=V_RAW), on=["ts", "symbol", "size", "exchange", "side"])
+    .filter(now_px != was_px)
+    .select(
+        prints_repriced=count_star(),
+        max_correction_ratio=(was_px / now_px).max().round(1),
+    )
+    .to_pandas()
+)
 
 # %%
 import matplotlib.pyplot as plt
 
-raw_win = db.sql(
-    f"""
-    SELECT ts, price FROM h5i('trades', {V_RAW})
-    WHERE symbol = 'AAPL' AND ts >= to_timestamp_micros({W0_US}) AND ts < to_timestamp_micros({W1_US})
-    """
-).to_pandas()
-clean_win = db.sql(
-    f"""
-    SELECT ts, price FROM trades
-    WHERE symbol = 'AAPL' AND ts >= to_timestamp_micros({W0_US}) AND ts < to_timestamp_micros({W1_US})
-    """
-).to_pandas()
+def aapl_window(version=None):
+    return (
+        db.table("trades", version=version)
+        .filter(
+            col("symbol") == "AAPL",
+            col("ts") >= W0.isoformat(),
+            col("ts") < W1.isoformat(),
+        )
+        .select("ts", "price")
+        .to_pandas()
+    )
+
+
+raw_win, clean_win = aapl_window(version=V_RAW), aapl_window()
 
 fig, ax = plt.subplots(figsize=(10, 4))
 ax.plot(raw_win["ts"], raw_win["price"], "x", ms=4, color="crimson", alpha=0.6,
@@ -296,10 +314,11 @@ bad0 = int(pd.Timestamp("2026-06-02 14:00", tz="UTC").value // 1_000)
 bad1 = int(pd.Timestamp("2026-06-02 14:10", tz="UTC").value // 1_000)
 oops = db.plan_delete_range("trades", bad0, bad1, note="overzealous: deleting real volatility")
 oops.apply()
-print("rows after over-delete:", db.sql("SELECT count(*) n FROM trades").to_pandas().n[0])
+n_rows = lambda: db.table("trades").select(count_star().alias("n")).to_pandas().n[0]
+print("rows after over-delete:", n_rows())
 
 db.restore("trades", V_CLEAN)
-print("rows after restore:   ", db.sql("SELECT count(*) n FROM trades").to_pandas().n[0])
+print("rows after restore:   ", n_rows())
 [{k: v[k] for k in ("sequence", "op", "rows", "note") if k in v} for v in db.versions("trades")[-3:]]
 
 # %% [markdown]

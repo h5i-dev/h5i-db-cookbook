@@ -20,6 +20,7 @@ import pandas as pd
 import pyarrow as pa
 
 import h5i_db
+from h5i_db import col, count_star, sql_expr, time_bucket
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("alpha_seasonality"), create=True)
@@ -53,17 +54,15 @@ db.append("bars_1h", bars, note="real SPY/QQQ hourly bars")
 # converting the bucket start to NY time in pandas.
 
 # %%
-vol30 = db.sql(
-    """
-    SELECT time_bucket('30m', ts, 'America/New_York') AS bucket,
-           symbol,
-           sum(size)  AS volume,
-           count(*)   AS n_trades
-    FROM trades
-    GROUP BY bucket, symbol
-    ORDER BY bucket, symbol
-    """
-).to_pandas()
+NY30 = time_bucket("30m", col("ts"), timezone="America/New_York")
+
+vol30 = (
+    db.table("trades")
+    .group_by(NY30.alias("bucket"), "symbol")
+    .agg(volume=col("size").sum(), n_trades=count_star())
+    .sort(["bucket", "symbol"])
+    .to_pandas()
+)
 vol30["tod"] = vol30["bucket"].dt.tz_convert("America/New_York").dt.strftime("%H:%M")
 
 profile = (
@@ -111,19 +110,14 @@ first_last = pd.DataFrame(
 # curvature the pipeline showed here would be a bug in the pipeline.
 
 # %%
-smile = db.sql(
-    """
-    WITH bars30 AS (
-        SELECT time_bucket('30m', ts, 'America/New_York') AS bucket, symbol,
-               first_value(price ORDER BY ts) AS open,
-               last_value(price ORDER BY ts)  AS close
-        FROM trades
-        GROUP BY bucket, symbol
-    )
-    SELECT bucket, symbol, close / open - 1 AS bar_ret
-    FROM bars30 ORDER BY bucket
-    """
-).to_pandas()
+smile = (
+    db.table("trades")
+    .group_by(NY30.alias("bucket"), "symbol")
+    .agg(open=col("price").first("ts"), close=col("price").last("ts"))
+    .select("bucket", "symbol", bar_ret=col("close") / col("open") - 1)
+    .sort("bucket")
+    .to_pandas()
+)
 smile["tod"] = smile["bucket"].dt.tz_convert("America/New_York").dt.strftime("%H:%M")
 vol_by_tod = smile.groupby("tod")["bar_ret"].std() * 1e4
 
@@ -135,15 +129,13 @@ smile["z"] = smile.groupby("symbol")["bar_ret"].transform(lambda s: s / s.std())
 levene = stats.levene(*[g["z"].values for _, g in smile.groupby("tod")])
 print(f"Levene test for equal variance across buckets: p = {levene.pvalue:.2f}")
 
-spread = db.sql(
-    """
-    SELECT time_bucket('30m', ts, 'America/New_York') AS bucket, symbol,
-           avg((ask - bid) / ((ask + bid) / 2)) * 10000 AS spread_bps
-    FROM quotes
-    GROUP BY bucket, symbol
-    ORDER BY bucket
-    """
-).to_pandas()
+spread = (
+    db.table("quotes")
+    .group_by(NY30.alias("bucket"), "symbol")
+    .agg(spread_bps=((col("ask") - col("bid")) / ((col("ask") + col("bid")) / 2)).mean() * 10000)
+    .sort("bucket")
+    .to_pandas()
+)
 spread["tod"] = spread["bucket"].dt.tz_convert("America/New_York").dt.strftime("%H:%M")
 spread_by_tod = spread.groupby("tod")["spread_bps"].mean()
 
@@ -167,17 +159,17 @@ pd.DataFrame(
 # that decides which trades belong to "Monday":
 
 # %%
-db.sql(
-    """
-    SELECT time_bucket('1d', ts)                     AS day_utc,
-           time_bucket('1d', ts, 'America/New_York') AS day_ny,
-           sum(size)                                 AS volume
-    FROM trades
-    GROUP BY day_utc, day_ny
-    ORDER BY day_utc
-    LIMIT 3
-    """
-).to_pandas()
+(
+    db.table("trades")
+    .group_by(
+        time_bucket("1d", col("ts")).alias("day_utc"),
+        time_bucket("1d", col("ts"), timezone="America/New_York").alias("day_ny"),
+    )
+    .agg(volume=col("size").sum())
+    .sort("day_utc")
+    .limit(3)
+    .to_pandas()
+)
 
 # %% [markdown]
 # For US equities the session sits inside one UTC day, so both groupings
@@ -193,14 +185,15 @@ db.sql(
 # - the NY-anchored version is the one that keeps working in March.
 
 # %%
-real = db.sql(
-    """
-    SELECT ts, symbol, volume,
-           close / lag(close) OVER (PARTITION BY symbol ORDER BY ts) - 1 AS ret
-    FROM bars_1h
-    ORDER BY ts
-    """
-).to_pandas()
+real = (
+    db.table("bars_1h")
+    .select(
+        "ts", "symbol", "volume",
+        ret=col("close") / sql_expr("lag(close)").over(partition_by="symbol", order_by="ts") - 1,
+    )
+    .sort("ts")
+    .to_pandas()
+)
 real["tod"] = real["ts"].dt.tz_convert("America/New_York").dt.strftime("%H:%M")
 # first bar of each day carries an overnight return -> exclude from the smile
 real.loc[real["tod"] == "09:30", "ret"] = np.nan

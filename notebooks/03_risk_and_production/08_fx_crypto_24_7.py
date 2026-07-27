@@ -22,6 +22,7 @@ import pandas as pd
 import pyarrow as pa
 
 import h5i_db
+from h5i_db import col, count_star, sql_expr, time_bucket
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("prod_fx"), create=True)
@@ -55,12 +56,15 @@ db.create_table("ticks", schema, time_column="ts", sort_key=["ts", "pair"])
 db.append("ticks", pa.Table.from_pandas(ticks_df, schema=schema, preserve_index=False),
           note="4 days of FX/crypto ticks, FX weekend removed")
 
-db.sql(
-    """
-    SELECT time_bucket('1d', ts) AS day_utc, pair, count(*) AS ticks
-    FROM ticks GROUP BY day_utc, pair ORDER BY day_utc, pair
-    """
-).to_pandas().pivot(index="day_utc", columns="pair", values="ticks")
+MID = (col("bid") + col("ask")) / 2
+
+(
+    db.table("ticks")
+    .group_by(time_bucket("1d", col("ts")).alias("day_utc"), "pair")
+    .agg(ticks=count_star())
+    .sort(["day_utc", "pair"])
+    .to_pandas()
+).pivot(index="day_utc", columns="pair", values="ticks")
 
 # %% [markdown]
 # ## 2. What is "a day"? Three answers from the same ticks
@@ -73,21 +77,22 @@ db.sql(
 # shift the boundary if you need that exact convention.)
 
 # %%
-def daily_close(tz_expr: str, label: str) -> pd.DataFrame:
-    out = db.sql(
-        f"""
-        SELECT time_bucket('1d', ts{tz_expr}) AS bucket,
-               last_value((bid + ask) / 2 ORDER BY ts) AS close
-        FROM ticks WHERE pair = 'EURUSD'
-        GROUP BY bucket ORDER BY bucket
-        """
-    ).to_pandas()
+def daily_close(timezone, label: str) -> pd.DataFrame:
+    out = (
+        db.table("ticks")
+        .filter(col("pair") == "EURUSD")
+        .group_by(time_bucket("1d", col("ts"), timezone=timezone).alias("bucket"))
+        .agg(close=MID.last("ts"))
+        .sort("bucket")
+        .to_pandas()
+    )
     out[label + "_boundary_utc"] = out["bucket"].dt.strftime("%m-%d %H:%M")
     return out.rename(columns={"close": label})[[label + "_boundary_utc", label]]
 
-utc = daily_close("", "close_utc")
-tokyo = daily_close(", 'Asia/Tokyo'", "close_tokyo")
-ny = daily_close(", 'America/New_York'", "close_ny")
+
+utc = daily_close(None, "close_utc")
+tokyo = daily_close("Asia/Tokyo", "close_tokyo")
+ny = daily_close("America/New_York", "close_ny")
 pd.concat([utc, tokyo, ny], axis=1).round(5)
 
 # %% [markdown]
@@ -108,15 +113,14 @@ pd.concat([utc, tokyo, ny], axis=1).round(5)
 # the fix when that matters.
 
 # %%
-bars = db.sql(
-    """
-    SELECT time_bucket('1h', ts) AS hr, pair,
-           last_value((bid + ask) / 2 ORDER BY ts) AS mid_close,
-           avg(ask - bid) AS avg_spread,
-           count(*) AS ticks
-    FROM ticks GROUP BY hr, pair ORDER BY hr, pair
-    """
-).to_arrow().rename_columns(["ts", "pair", "mid_close", "avg_spread", "ticks"])
+bars = (
+    db.table("ticks")
+    .group_by(time_bucket("1h", col("ts")).alias("hr"), "pair")
+    .agg(mid_close=MID.last("ts"), avg_spread=(col("ask") - col("bid")).mean(), ticks=count_star())
+    .select(col("hr").alias("ts"), "pair", "mid_close", "avg_spread", "ticks")
+    .sort(["ts", "pair"])
+    .to_arrow()
+)
 
 bars_schema = pa.schema(
     [pa.field("ts", pa.timestamp("us", tz="UTC"), nullable=False)]
@@ -125,19 +129,20 @@ bars_schema = pa.schema(
 db.create_table("bars_1h", bars_schema, time_column="ts", sort_key=["ts", "pair"])
 db.append("bars_1h", bars.cast(bars_schema), note="hourly mid bars")
 
-rv = db.sql(
-    """
-    WITH r AS (
-        SELECT ts, pair,
-               ln(mid_close / lag(mid_close) OVER (PARTITION BY pair ORDER BY ts)) AS lr
-        FROM bars_1h
+PREV_MID = sql_expr("lag(mid_close)").over(partition_by="pair", order_by="ts")
+
+rv = (
+    db.table("bars_1h")
+    .with_columns(lr=(col("mid_close") / PREV_MID).log())
+    .select(
+        "ts", "pair",
+        rv_ann=(
+            (col("lr") * col("lr")).rolling_sum(24, order_by="ts", partition_by="pair") * 365.0
+        ).sqrt(),
     )
-    SELECT ts, pair,
-           sqrt(sum(lr * lr) OVER (PARTITION BY pair ORDER BY ts
-                                   ROWS BETWEEN 23 PRECEDING AND CURRENT ROW) * 365.0) AS rv_ann
-    FROM r ORDER BY ts, pair
-    """
-).to_pandas().dropna()
+    .sort(["ts", "pair"])
+    .to_pandas()
+).dropna()
 rv.tail(3)
 
 # %%
@@ -163,13 +168,13 @@ fig.tight_layout()
 # humps - the method, not this picture, is the takeaway.
 
 # %%
-clock = db.sql(
-    """
-    SELECT extract(hour FROM ts) AS hour_utc, pair,
-           count(*) AS ticks, avg(ask - bid) AS avg_spread
-    FROM ticks GROUP BY hour_utc, pair ORDER BY hour_utc, pair
-    """
-).to_pandas()
+clock = (
+    db.table("ticks")
+    .group_by(sql_expr("extract(hour FROM ts)").alias("hour_utc"), "pair")
+    .agg(ticks=count_star(), avg_spread=(col("ask") - col("bid")).mean())
+    .sort(["hour_utc", "pair"])
+    .to_pandas()
+)
 
 fig, ax = plt.subplots(figsize=(10, 4))
 for pair, g in clock.groupby("pair"):
@@ -213,12 +218,13 @@ print(f"1s locf grid over 96h: {n_1s:,} rows (cap is 1M - a 1s grid fits ~11 day
 # A 1-minute locf grid, plus honest 1m bars (only minutes that actually traded):
 grid_locf = db.sql("SELECT ts, bid, ask FROM gapfill('eur_ticks', 'ts', 60000000, 'locf')").to_pandas()
 grid_locf["mid"] = (grid_locf["bid"] + grid_locf["ask"]) / 2
-bars_1m = db.sql(
-    """
-    SELECT time_bucket('1m', ts) AS minute, last_value((bid + ask) / 2 ORDER BY ts) AS mid
-    FROM eur_ticks GROUP BY minute ORDER BY minute
-    """
-).to_pandas()
+bars_1m = (
+    db.table("eur_ticks")
+    .group_by(time_bucket("1m", col("ts")).alias("minute"))
+    .agg(mid=MID.last("ts"))
+    .sort("minute")
+    .to_pandas()
+)
 print(f"1m locf grid: {len(grid_locf):,} rows; traded minutes: {len(bars_1m):,}; "
       f"fabricated by locf: {len(grid_locf) - len(bars_1m):,}")
 

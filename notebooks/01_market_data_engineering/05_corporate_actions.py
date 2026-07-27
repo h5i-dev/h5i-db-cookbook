@@ -17,6 +17,7 @@ import pandas as pd
 import pyarrow as pa
 
 import h5i_db
+from h5i_db import col, sql_expr
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("mde_corpactions"), create=True)
@@ -92,20 +93,23 @@ db.append("prices", raw_table, note="raw unadjusted tape, AAPL+NVDA 2018-2026")
 # signal or stop-loss fed this series would have fired on a non-event.
 
 # %%
-worst = db.sql(
-    """
-    WITH r AS (
-        SELECT ts, symbol,
-               close / lag(close) OVER (PARTITION BY symbol ORDER BY ts) - 1 AS ret
-        FROM prices
+PREV_CLOSE = sql_expr("lag(close)").over(partition_by="symbol", order_by="ts")
+
+
+def worst_days(version=None, n: int = 5):
+    """The n most negative daily returns - re-run after the restatement."""
+    return (
+        db.table("prices", version=version)
+        .with_columns(ret=col("close") / PREV_CLOSE - 1)
+        .filter(col("ret").is_not_null())
+        .select("ts", "symbol", ret_pct=(col("ret") * 100).round(1))
+        .sort("ret_pct")
+        .limit(n)
+        .to_pandas()
     )
-    SELECT ts, symbol, round(ret * 100, 1) AS ret_pct
-    FROM r
-    WHERE ret IS NOT NULL
-    ORDER BY ret
-    LIMIT 5
-    """
-).to_pandas()
+
+
+worst = worst_days()
 worst
 
 # %%
@@ -154,6 +158,9 @@ db.create_table("splits", SPLIT_SCHEMA, time_column="ts", sort_key=["ts", "symbo
 db.append("splits", pa.Table.from_pandas(SPLITS, preserve_index=False).cast(SPLIT_SCHEMA),
           note="split schedule through 2024-06-10")
 
+# A non-equi LEFT JOIN (`s.ts > p.ts`) whose whole condition would have to be
+# a raw fragment anyway - one of the places a SQL string stays clearer than
+# the builder.
 adjusted = db.sql(
     """
     SELECT p.ts, p.symbol, p.close AS close_raw,
@@ -223,19 +230,26 @@ db.write(
 # with the implied factor recovered from the two versions:
 
 # %%
-db.sql(
-    """
-    SELECT now.ts, now.symbol,
-           was.close                       AS raw_close,
-           now.close                       AS adj_close,
-           round(was.close / now.close, 2) AS implied_factor
-    FROM prices now
-    JOIN h5i('prices', 1) was
-      ON now.ts = was.ts AND now.symbol = was.symbol
-    WHERE now.symbol = 'AAPL' AND now.ts BETWEEN '2020-08-26' AND '2020-09-03'
-    ORDER BY now.ts
-    """
-).to_pandas()
+now_px = col("close", relation="l")
+was_px = col("close", relation="r")
+
+(
+    db.table("prices")  # head: restated
+    .join(db.table("prices", version=1), on=["ts", "symbol"])  # raw tape
+    .filter(
+        col("symbol", relation="l") == "AAPL",
+        col("ts", relation="l").between("2020-08-26", "2020-09-03"),
+    )
+    .select(
+        ts=col("ts", relation="l"),
+        symbol=col("symbol", relation="l"),
+        raw_close=was_px,
+        adj_close=now_px,
+        implied_factor=(was_px / now_px).round(2),
+    )
+    .sort("ts")
+    .to_pandas()
+)
 
 # %% [markdown]
 # "What did the price series look like before the restatement?" also works by
@@ -245,8 +259,11 @@ db.sql(
 # %%
 raw_commit = db.versions("prices")[1]  # sequence 1 = the raw-tape append
 as_of = pd.Timestamp(raw_commit["committed_at_ns"], unit="ns", tz="UTC").isoformat()
-pre = db.read("prices", as_of=as_of)
-aapl_pre = pre.to_pandas().query("symbol == 'AAPL' and ts == '2020-08-28 20:00:00+00:00'")
+pre = db.read("prices", as_of=as_of).to_pandas()
+# Compare against a Timestamp, not a string: pandas parses a string literal to
+# datetime64[ns] and the unit mismatch with our [us] column matches nothing.
+split_eve = pd.Timestamp("2020-08-28 20:00", tz="UTC")
+aapl_pre = pre[(pre["symbol"] == "AAPL") & (pre["ts"] == split_eve)]
 print(f"as of {as_of}:")
 print(aapl_pre[["ts", "symbol", "close"]].to_string(index=False))
 
@@ -256,19 +273,7 @@ print(aapl_pre[["ts", "symbol", "close"]].to_string(index=False))
 # corporate-action ghosts:
 
 # %%
-db.sql(
-    """
-    WITH r AS (
-        SELECT ts, symbol,
-               close / lag(close) OVER (PARTITION BY symbol ORDER BY ts) - 1 AS ret
-        FROM prices
-    )
-    SELECT ts, symbol, round(ret * 100, 1) AS ret_pct
-    FROM r WHERE ret IS NOT NULL
-    ORDER BY ret
-    LIMIT 5
-    """
-).to_pandas()
+worst_days()
 
 # %% [markdown]
 # ## Choosing between the patterns

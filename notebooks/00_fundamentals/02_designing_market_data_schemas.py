@@ -16,6 +16,7 @@
 import pyarrow as pa
 
 import h5i_db
+from h5i_db import col, count_star
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("00_schemas"), create=True)
@@ -125,18 +126,20 @@ db.schema("trades")
 # needed at this layer.
 
 # %%
-db.sql(
-    """
-    SELECT symbol,
-           count(*)                                    AS quotes,
-           round(avg((ask - bid) / ((ask + bid) / 2)) * 1e4, 2) AS avg_spread_bps,
-           round(min(bid), 2)                          AS min_bid,
-           round(max(ask), 2)                          AS max_ask
-    FROM quotes
-    GROUP BY symbol
-    ORDER BY symbol
-    """
-).to_pandas()
+mid = (col("ask") + col("bid")) / 2
+
+(
+    db.table("quotes")
+    .group_by("symbol")
+    .agg(
+        quotes=count_star(),
+        avg_spread_bps=(((col("ask") - col("bid")) / mid).mean() * 1e4).round(2),
+        min_bid=col("bid").min().round(2),
+        max_ask=col("ask").max().round(2),
+    )
+    .sort("symbol")
+    .to_pandas()
+)
 
 # %% [markdown]
 # ## 3. What strict append rejects
