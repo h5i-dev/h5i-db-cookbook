@@ -23,6 +23,7 @@ import pyarrow as pa
 import matplotlib.pyplot as plt
 
 import h5i_db
+from h5i_db import col, count_star, lit, sql_expr, when
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("mde_asof"), create=True)
@@ -99,13 +100,11 @@ print(f"{len(tr):,} trades, {len(qp):,} quotes over 2 sessions")
 
 # %%
 t0 = time.perf_counter()
-joined = db.sql(
-    """
-    SELECT ts, symbol, trade_id, price, side, ts_right, bid, ask
-    FROM asof_join('trades', 'quotes', 'ts', 'ts', 'symbol')
-    ORDER BY trade_id
-    """
-).to_pandas()
+TQ = db.table("trades").join_asof(db.table("quotes"), on="ts", by="symbol")
+
+joined = TQ.select(
+    "ts", "symbol", "trade_id", "price", "side", "ts_right", "bid", "ask"
+).sort("trade_id").to_pandas()
 elapsed_ms = (time.perf_counter() - t0) * 1e3
 print(f"{len(joined):,} trades matched against {len(qp):,} quotes "
       f"in {elapsed_ms:.1f} ms")
@@ -153,26 +152,23 @@ db.sql(
 # `CASE`.
 
 # %%
-signed = db.sql(
-    """
-    WITH j AS (
-        SELECT ts, symbol, trade_id, price, size, side, bid, ask,
-               (bid + ask) / 2 AS mid
-        FROM asof_join('trades', 'quotes', 'ts', 'ts', 'symbol')
-    ),
-    t AS (
-        SELECT *, lag(price) OVER (PARTITION BY symbol ORDER BY ts) AS prev_px
-        FROM j
+PREV_PX = sql_expr("lag(price)").over(partition_by="symbol", order_by="ts")
+
+signed = (
+    TQ.select(
+        "ts", "symbol", "trade_id", "price", "size", "side", "bid", "ask",
+        mid=(col("bid") + col("ask")) / 2,
     )
-    SELECT *,
-           CASE WHEN price > mid THEN 'B'
-                WHEN price < mid THEN 'S'
-                WHEN price > prev_px THEN 'B'
-                WHEN price < prev_px THEN 'S'
-                ELSE 'U' END AS lr_side
-    FROM t
-    """
-).to_pandas()
+    .with_columns(prev_px=PREV_PX)
+    .with_columns(
+        lr_side=when(col("price") > col("mid")).then(lit("B"))
+        .when(col("price") < col("mid")).then(lit("S"))
+        .when(col("price") > col("prev_px")).then(lit("B"))
+        .when(col("price") < col("prev_px")).then(lit("S"))
+        .otherwise(lit("U"))
+    )
+    .to_pandas()
+)
 
 overall = (signed["lr_side"] == signed["side"]).mean()
 quote_rule = signed[signed["price"] != signed["mid"]]
@@ -203,35 +199,42 @@ pd.crosstab(signed["lr_side"], signed["side"], margins=True)
 # statement, in basis points of the mid.
 
 # %%
-spreads = db.sql(
-    """
-    WITH j AS (
-        SELECT symbol, trade_id, price, side, bid, ask, (bid + ask) / 2 AS mid
-        FROM asof_join('trades', 'quotes', 'ts', 'ts', 'symbol')
-    ),
-    m AS (
-        SELECT trade_id, (bid + ask) / 2 AS mid_5m
-        FROM asof_join('marks', 'quotes', 'ts', 'ts', 'symbol', 'forward')
+MID = (col("bid") + col("ask")) / 2
+
+j = TQ.select("symbol", "trade_id", "price", "side", "bid", "ask", mid=MID)
+m = (
+    db.table("marks")
+    .join_asof(db.table("quotes"), on="ts", by="symbol", direction="forward")
+    .select("trade_id", mid_5m=MID)
+)
+
+# .join() aliases the sides l and r: l is the trade-time join, r the mark.
+px = col("price", relation="l")
+mid = col("mid", relation="l")
+mid_5m = col("mid_5m", relation="r")
+direction = when(col("side", relation="l") == "B").then(lit(1)).otherwise(lit(-1))
+
+spreads = (
+    j.join(m, on="trade_id")
+    .filter(mid_5m.is_not_null())
+    .group_by(col("symbol", relation="l").alias("symbol"))
+    .agg(
+        quoted_bps=((col("ask", relation="l") - col("bid", relation="l")) / mid).mean() * 1e4,
+        effective_bps=(2 * (px - mid).abs() / mid).mean() * 1e4,
+        realized_bps=(2 * direction * (px - mid_5m) / mid).mean() * 1e4,
+        n_trades=count_star(),
     )
-    SELECT j.symbol,
-           avg((j.ask - j.bid) / j.mid) * 1e4                    AS quoted_bps,
-           avg(2 * abs(j.price - j.mid) / j.mid) * 1e4           AS effective_bps,
-           avg(2 * (CASE WHEN j.side = 'B' THEN 1 ELSE -1 END)
-                 * (j.price - m.mid_5m) / j.mid) * 1e4           AS realized_bps,
-           count(*)                                              AS n_trades
-    FROM j JOIN m USING (trade_id)
-    WHERE m.mid_5m IS NOT NULL
-    GROUP BY 1 ORDER BY 1
-    """
-).to_pandas()
+    .sort("symbol")
+    .to_pandas()
+)
 spreads
 
 # %%
 x = np.arange(len(spreads))
 w = 0.27
 fig, ax = plt.subplots(figsize=(8, 4))
-for i, col in enumerate(("quoted_bps", "effective_bps", "realized_bps")):
-    ax.bar(x + (i - 1) * w, spreads[col], width=w, label=col.replace("_bps", ""))
+for i, measure in enumerate(("quoted_bps", "effective_bps", "realized_bps")):
+    ax.bar(x + (i - 1) * w, spreads[measure], width=w, label=measure.replace("_bps", ""))
 ax.set_xticks(x, spreads["symbol"])
 ax.set_title("Spread measures by symbol (bps of mid)")
 ax.set_xlabel("symbol")
@@ -266,11 +269,12 @@ db.append("quotes_sparse", pa.Table.from_pandas(qs, preserve_index=False).cast(q
 
 for label, tol in [("no tolerance", None), ("60s tolerance", 60_000_000),
                    ("5s tolerance", 5_000_000)]:
-    args = "'ts', 'ts', 'symbol'" + (f", 'backward', {tol}" if tol else "")
-    r = db.sql(
-        f"SELECT count(*) AS n, count(bid) AS matched "
-        f"FROM asof_join('trades', 'quotes_sparse', {args})"
-    ).to_pandas()
+    r = (
+        db.table("trades")
+        .join_asof(db.table("quotes_sparse"), on="ts", by="symbol", tolerance=tol)
+        .select(n=count_star(), matched=col("bid").count())
+        .to_pandas()
+    )
     print(f"{label:>13}: {r['matched'][0]:,} of {r['n'][0]:,} trades matched "
           f"({r['matched'][0] / r['n'][0]:.1%})")
 
@@ -282,16 +286,20 @@ for label, tol in [("no tolerance", None), ("60s tolerance", 60_000_000),
 #
 # ## Takeaways
 #
-# - `asof_join('trades', 'quotes', 'ts', 'ts', 'symbol')` is the whole
-#   trades-vs-quotes alignment - per-key, time-correct, streaming on sorted
-#   storage, and it agrees with `pandas.merge_asof` row for row.
-# - Direction and tolerance are first-class: `'forward'` fetched the
-#   5-minutes-later mid for realized spread; a microsecond tolerance turned
-#   stale-quote marking into visible, countable NULLs. Colliding right
-#   columns get `_right`.
-# - The join composes with the rest of SQL - Lee-Ready signing and the full
-#   quoted/effective/realized decomposition are each one statement (CTEs +
-#   `lag()` + `CASE`).
+# - `.join_asof(other, on="ts", by="symbol")` is the whole trades-vs-quotes
+#   alignment - per-key, time-correct, streaming on sorted storage, and it
+#   agrees with `pandas.merge_asof` row for row. Both sides must be plain
+#   unpinned tables (the underlying `asof_join` takes names), so filter
+#   *after* the join.
+# - Direction and tolerance are first-class: `direction="forward"` fetched
+#   the 5-minutes-later mid for realized spread; a microsecond `tolerance`
+#   turned stale-quote marking into visible, countable NULLs, and sweeping it
+#   is a Python loop rather than three hand-written statements. Colliding
+#   right columns get `_right`.
+# - The joined frame composes: hold it in a variable (`TQ`) and Lee-Ready
+#   signing and the full quoted/effective/realized decomposition each build
+#   on it - `when().then()` for the CASE ladder, `sql_expr("lag(price)")`
+#   `.over(...)` for the tick test.
 # - Scoring against ground truth requires a tape where trades and quotes
 #   share one price process - worth remembering before benchmarking signing
 #   accuracy on any synthetic data.

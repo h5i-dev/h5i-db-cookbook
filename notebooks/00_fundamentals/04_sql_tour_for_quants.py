@@ -8,6 +8,11 @@
 # a realistic task on a 50-name daily panel, ending with the resource guards
 # (`timeout=`, `max_rows=`) that keep exploratory SQL from taking down a
 # shared box. If you know kdb/q or pandas, this is your phrasebook.
+#
+# Everything here is written as SQL strings on purpose - SQL is the subject.
+# The rest of the cookbook prefers the lazy DataFrame builder (`db.table(...)`
+# plus verbs, recipe 09), which compiles to exactly these statements; `.sql()`
+# on any built query prints the SQL it produced.
 
 # %%
 import pyarrow as pa

@@ -14,6 +14,7 @@ import pandas as pd
 import pyarrow as pa
 
 import h5i_db
+from h5i_db import col, count_star, sql_expr
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("alpha_voltarget"), create=True)
@@ -47,21 +48,19 @@ db.append(
     note="yfinance 10 names 2020-2026",
 )
 
-port = db.sql(
-    """
-    WITH r AS (
-        SELECT ts, symbol,
-               adj_close / lag(adj_close) OVER (PARTITION BY symbol ORDER BY ts) - 1 AS ret
-        FROM prices
-    )
-    SELECT ts, avg(ret) AS ret
-    FROM r
-    WHERE ret IS NOT NULL
-    GROUP BY ts
-    HAVING count(*) = 10
-    ORDER BY ts
-    """
-).to_arrow()
+PREV = sql_expr("lag(adj_close)").over(partition_by="symbol", order_by="ts")
+
+port = (
+    db.table("prices")
+    .with_columns(ret=col("adj_close") / PREV - 1)
+    .filter(col("ret").is_not_null())
+    .group_by("ts")
+    .agg(ret=col("ret").mean(), names=count_star())
+    .filter(col("names") == 10)  # the HAVING: full cross-section only
+    .select("ts", "ret")
+    .sort("ts")
+    .to_arrow()
+)
 
 ret_schema = pa.schema(
     [
@@ -85,14 +84,12 @@ print(f"{port.num_rows} daily portfolio returns")
 # といった具合です）。
 
 # %%
-ewma_sql = db.sql(
-    """
-    SELECT ts, ret,
-           ewma(ret * ret, 0.06) OVER (ORDER BY ts) AS ewma_var
-    FROM port_returns
-    ORDER BY ts
-    """
-).to_pandas()
+ewma_sql = (
+    db.table("port_returns")
+    .select("ts", "ret", ewma_var=(col("ret") * col("ret")).ewma(0.06, order_by="ts"))
+    .sort("ts")
+    .to_pandas()
+)
 ewma_sql["ewma_vol_ann"] = np.sqrt(ewma_sql["ewma_var"] * 252)
 
 # Cross-check against pandas (adjust=False = the plain recursion).

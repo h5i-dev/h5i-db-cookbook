@@ -27,13 +27,20 @@ Real-data recipes download from Yahoo Finance on first run and cache to
 need tick-level data use realistic synthetic generators (`cookbook_utils/`),
 deterministic given a seed.
 
+Queries are written with the lazy DataFrame builder (`db.table(...)` plus
+verbs) rather than SQL strings, because a query you can hold in a variable is
+easier to read, reuse and generate. It compiles to SQL and `.sql()` prints
+what it produced, so nothing is hidden - recipe 09 covers it, recipe 04 is a
+pure-SQL tour, and a handful of queries stay SQL where no verb exists
+(`UNION`, `gapfill`, `tail`, deep CTE chains).
+
 ## Recipes
 
 ### 00 - Fundamentals
 
 | Recipe | What you learn |
 |---|---|
-| [01 Quickstart](notebooks/00_fundamentals/01_quickstart.ipynb) | Create a DB, ingest ticks, first SQL, first time travel, in 5 minutes |
+| [01 Quickstart](notebooks/00_fundamentals/01_quickstart.ipynb) | Create a DB, ingest ticks, first query, first time travel, in 5 minutes |
 | [02 Designing market-data schemas](notebooks/00_fundamentals/02_designing_market_data_schemas.ipynb) | Trades/quotes/bars schemas, time columns, sort keys, Arrow types |
 | [03 Ingestion patterns](notebooks/00_fundamentals/03_ingestion_patterns.ipynb) | Parquet/CSV/pandas/polars in; append vs write; batching; conflict handling |
 | [04 SQL tour for quants](notebooks/00_fundamentals/04_sql_tour_for_quants.ipynb) | DataFusion SQL: windows, CTEs, `time_bucket`, `vwap`, `ewma`, rolling sugar |
@@ -41,6 +48,7 @@ deterministic given a seed.
 | [06 Previewable mutations](notebooks/00_fundamentals/06_previewable_mutations.ipynb) | plan → inspect → apply/discard; mutation policy gates |
 | [07 Streaming appends & tail](notebooks/00_fundamentals/07_streaming_appends_and_tail.ipynb) | Live feed simulation; append-only tails; incremental consumers |
 | [08 Maintenance](notebooks/00_fundamentals/08_maintenance.ipynb) | snapshot, compact, vacuum, verify: keeping a store healthy |
+| [09 DataFrame builder](notebooks/00_fundamentals/09_dataframe_builder.ipynb) | `db.table(...)` + verbs: lazy queries as Python values, and `.sql()` back |
 
 ### 01 - Market data engineering
 

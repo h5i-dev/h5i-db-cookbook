@@ -23,6 +23,7 @@ from pathlib import Path
 import pandas as pd
 
 import h5i_db
+from h5i_db import count_star
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("00_maintenance"), create=True)
@@ -193,7 +194,7 @@ entry = next(iter(snap["entries"].values()))
 print(f"snapshot {snap['name']!r} pins {entry['table_name']} @ v{entry['sequence']}")
 print(f"manifest checksum: {entry['manifest_checksum'][:16]}…")
 
-db.sql("SELECT count(*) AS rows FROM h5i('trades', 'eod-2026-06-05')").to_pandas()
+db.table("trades", snapshot="eod-2026-06-05").select(count_star().alias("rows")).to_pandas()
 
 # %% [markdown]
 # ## A maintenance cadence that works

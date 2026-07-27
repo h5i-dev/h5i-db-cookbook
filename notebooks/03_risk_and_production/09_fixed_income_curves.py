@@ -21,6 +21,7 @@ import pandas as pd
 import pyarrow as pa
 
 import h5i_db
+from h5i_db import col, sql_expr, when
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("prod_curves"), create=True)
@@ -74,18 +75,21 @@ for day_ts, day_rows in feed_df.groupby("ts"):
 # expectations model, this is just the long-slope observable).
 
 # %%
-key_rates = db.sql(
-    """
-    SELECT ts,
-           max(CASE WHEN tenor_years = 0.25 THEN yield_pct END) AS y3m,
-           max(CASE WHEN tenor_years = 2    THEN yield_pct END) AS y2,
-           max(CASE WHEN tenor_years = 5    THEN yield_pct END) AS y5,
-           max(CASE WHEN tenor_years = 10   THEN yield_pct END) AS y10,
-           max(CASE WHEN tenor_years = 30   THEN yield_pct END) AS y30
-    FROM curves
-    GROUP BY ts ORDER BY ts
-    """
-).to_pandas()
+# Long-to-wide by conditional aggregation. As a dict of tenors it is one
+# definition instead of five near-identical CASE arms - add a tenor by adding
+# an entry.
+KEY_TENORS = {"y3m": 0.25, "y2": 2, "y5": 5, "y10": 10, "y30": 30}
+
+key_rates = (
+    db.table("curves")
+    .group_by("ts")
+    .agg(**{
+        name: when(col("tenor_years") == t).then(col("yield_pct")).max()
+        for name, t in KEY_TENORS.items()
+    })
+    .sort("ts")
+    .to_pandas()
+)
 key_rates["s2s10"] = key_rates["y10"] - key_rates["y2"]
 key_rates["fly_2_5_10"] = 2 * key_rates["y5"] - key_rates["y2"] - key_rates["y10"]
 key_rates["slope_proxy"] = key_rates["y10"] - key_rates["y3m"]
@@ -113,20 +117,23 @@ fig.tight_layout()
 # all (tenor, date) pairs surfaces it immediately.
 
 # %%
-db.sql(
-    """
-    WITH chg AS (
-        SELECT ts, tenor_years, yield_pct,
-               yield_pct - lag(yield_pct) OVER (PARTITION BY tenor_years ORDER BY ts) AS d1
-        FROM curves
+PREV_Y = sql_expr("lag(yield_pct)").over(partition_by="tenor_years", order_by="ts")
+
+(
+    db.table("curves")
+    .with_columns(d1=col("yield_pct") - PREV_Y)
+    .filter(col("d1").is_not_null())
+    .select(
+        "ts", "tenor_years",
+        yield_pct=col("yield_pct").round(4),
+        chg_bp=(100 * col("d1")).round(1),
+        abs_move=col("d1").abs(),
     )
-    SELECT ts, tenor_years, round(yield_pct, 4) AS yield_pct, round(100 * d1, 1) AS chg_bp
-    FROM chg
-    WHERE d1 IS NOT NULL
-    ORDER BY abs(d1) DESC
-    LIMIT 4
-    """
-).to_pandas()
+    .sort("abs_move", descending=True)
+    .limit(4)
+    .select("ts", "tenor_years", "yield_pct", "chg_bp")
+    .to_pandas()
+)
 
 # %% [markdown]
 # The top two rows are the same tenor on consecutive dates with opposite
@@ -175,18 +182,24 @@ print(f"applied as v{commit['sequence']} ({commit['op']})")
 
 # %%
 v_pre_restate = db.versions("curves")[-2]["sequence"]  # head just before the restatement
-db.sql(
-    f"""
-    SELECT was.tenor_years,
-           round(was.yield_pct, 4) AS as_marked_that_night,
-           round(now.yield_pct, 4) AS restated,
-           round(100 * (now.yield_pct - was.yield_pct), 1) AS diff_bp
-    FROM h5i('curves', {v_pre_restate}) was
-    JOIN curves now ON was.ts = now.ts AND was.tenor_years = now.tenor_years
-    WHERE was.ts = to_timestamp_micros({day_us}) AND was.tenor_years IN (2, 5, 10, 30)
-    ORDER BY was.tenor_years
-    """
-).to_pandas()
+was_y, now_y = col("yield_pct", relation="l"), col("yield_pct", relation="r")
+
+(
+    db.table("curves", version=v_pre_restate)
+    .join(db.table("curves"), on=["ts", "tenor_years"])
+    .filter(
+        col("ts", relation="l") == pd.Timestamp(day_us, unit="us", tz="UTC").isoformat(),
+        col("tenor_years", relation="l").is_in([2, 5, 10, 30]),
+    )
+    .select(
+        tenor_years=col("tenor_years", relation="l"),
+        as_marked_that_night=was_y.round(4),
+        restated=now_y.round(4),
+        diff_bp=(100 * (now_y - was_y)).round(1),
+    )
+    .sort("tenor_years")
+    .to_pandas()
+)
 
 # %% [markdown]
 # ## 6. Carry & rolldown from the latest curve
@@ -199,9 +212,16 @@ db.sql(
 # space) - fine for a relative-value screen, not a P&L forecast.
 
 # %%
-latest = db.sql(
-    "SELECT tenor_years, yield_pct FROM curves WHERE ts = (SELECT max(ts) FROM curves) ORDER BY tenor_years"
-).to_pandas()
+# No verb for a scalar subquery: resolve the latest mark date, then filter.
+latest_ts = db.table("curves").select(m=col("ts").max()).to_pandas()["m"][0]
+
+latest = (
+    db.table("curves")
+    .filter(col("ts") == latest_ts.isoformat())
+    .select("tenor_years", "yield_pct")
+    .sort("tenor_years")
+    .to_pandas()
+)
 
 tenors, ylds = latest["tenor_years"].values, latest["yield_pct"].values
 y = lambda t: float(np.interp(t, tenors, ylds))

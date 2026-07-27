@@ -20,6 +20,7 @@ import pandas as pd
 import pyarrow as pa
 
 import h5i_db
+from h5i_db import col, time_bucket, vwap
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("00_streaming"), create=True)
@@ -110,18 +111,22 @@ assert rows_seen == n
 print(f"\nreader consumed all {rows_seen:,} rows; cursor at version {last_version}")
 
 # %% [markdown]
-# インクリメンタルなバーは、ゼロから集計したものと一致しなければなりません。テーブル全体を
-# `time_bucket` で1回まわしたものが正解です。
+# インクリメンタルなバーは、ゼロから集計したものと一致しなければなりません。テーブル全体に
+# `time_bucket` の集約を1回かけたものが正解です。
 
 # %%
-full = db.sql(
-    """
-    SELECT time_bucket('1m', ts) AS bar, symbol,
-           max(price) AS high, min(price) AS low,
-           sum(size) AS volume, vwap(price, size) AS vwap
-    FROM trades GROUP BY bar, symbol ORDER BY bar, symbol
-    """
-).to_pandas()
+full = (
+    db.table("trades")
+    .group_by(time_bucket("1m", col("ts")).alias("bar"), "symbol")
+    .agg(
+        high=col("price").max(),
+        low=col("price").min(),
+        volume=col("size").sum(),
+        vwap=vwap(col("price"), col("size")),
+    )
+    .sort(["bar", "symbol"])
+    .to_pandas()
+)
 
 inc = (pd.DataFrame.from_dict(bars, orient="index")
        .rename_axis(["bar", "symbol"]).reset_index().sort_values(["bar", "symbol"])

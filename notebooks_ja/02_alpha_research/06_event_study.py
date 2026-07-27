@@ -21,6 +21,7 @@ import pandas as pd
 import pyarrow as pa
 
 import h5i_db
+from h5i_db import col, sql_expr
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("alpha_events"), create=True)
@@ -62,8 +63,8 @@ for sym, j, is_t in zip(event_sym, event_j, treated):
     factor = np.where(k < j, 1.0, (1 + DAY0_SHOCK) * (1 + DRIFT_PER_DAY) ** np.clip(k - j, 0, DRIFT_DAYS))
     mask = prices["symbol"].to_numpy() == sym
     idx = np.searchsorted(sess_us, ts_us_all[mask])
-    for col in ("open", "high", "low", "close"):
-        prices.loc[mask, col] = prices.loc[mask, col].to_numpy() * factor[idx]
+    for field in ("open", "high", "low", "close"):
+        prices.loc[mask, field] = prices.loc[mask, field].to_numpy() * factor[idx]
 
 print(f"{treated.sum()} treated / {(~treated).sum()} control events")
 print("weekend announcements:", (pd.to_datetime(ann_us, unit="us", utc=True).dayofweek >= 5).sum())
@@ -162,17 +163,31 @@ db.tables()
 # あれば、揃えの誤りでイベント窓が静かにずれる代わりに、大きな声の失敗になります。
 
 # %%
-aligned = db.sql(
-    f"""
-    SELECT e.event_id, e.symbol, e.treated,
-           e.ts        AS announced,
-           e.ts_right  AS effective_session,
-           p.close     AS day0_close
-    FROM asof_join('events', 'sessions', 'ts', 'ts', 'cal', 'forward', {7 * 86_400 * 1_000_000}) e
-    JOIN prices p ON p.ts = e.ts_right AND p.symbol = e.symbol
-    ORDER BY e.event_id
-    """
-).to_pandas()
+# Forward ASOF: each announcement snaps to the next session actually present
+# in the calendar - then join that session's close off the price panel.
+next_session = (
+    db.table("events")
+    .join_asof(
+        db.table("sessions"), on="ts", by="cal",
+        direction="forward", tolerance=7 * 86_400 * 1_000_000,
+    )
+    .select("event_id", "symbol", "treated", announced=col("ts"),
+            effective_session=col("ts_right"))
+)
+
+aligned = (
+    next_session.join(
+        db.table("prices"),
+        left_on=["effective_session", "symbol"], right_on=["ts", "symbol"],
+    )
+    .select(
+        "event_id", "treated", "announced", "effective_session",
+        symbol=col("symbol", relation="l"),
+        day0_close=col("close", relation="r"),
+    )
+    .sort("event_id")
+    .to_pandas()
+)
 assert len(aligned) == N_EVENTS, "one output row per event"
 expected_us = sess_us[np.searchsorted(sess_us, ann_us)]  # independent check
 got_us = aligned.sort_values("event_id")["effective_session"].astype("int64").to_numpy()
@@ -189,25 +204,23 @@ weekend.assign(
 # オフセットも要りません。ジョインが狙うのは価格テーブルに*実際に存在する*セッションなので、
 # 祝日でもそのまま動きます。
 #
-# ## 4. リターンと市場ファクターを SQL で
+# ## 4. リターンと市場ファクター
 #
 # 銘柄ごとの単純リターンは `lag()` で、等ウェイトの市場リターンはセッションごとのウィンドウ
 # 平均で。整列済みストレージの上で計算される1文です。
 
 # %%
-rets = db.sql(
-    """
-    WITH r AS (
-        SELECT ts, symbol,
-               close / lag(close) OVER (PARTITION BY symbol ORDER BY ts) - 1 AS ret
-        FROM prices
-    )
-    SELECT ts, symbol, ret, avg(ret) OVER (PARTITION BY ts) AS mkt
-    FROM r
-    WHERE ret IS NOT NULL
-    ORDER BY ts, symbol
-    """
-).to_pandas()
+PREV_CLOSE = sql_expr("lag(close)").over(partition_by="symbol", order_by="ts")
+
+rets = (
+    db.table("prices")
+    .with_columns(ret=col("close") / PREV_CLOSE - 1)
+    .with_columns(mkt=col("ret").mean().over(partition_by="ts"))
+    .filter(col("ret").is_not_null())
+    .select("ts", "symbol", "ret", "mkt")
+    .sort(["ts", "symbol"])
+    .to_pandas()
+)
 rets.head(3)
 
 # %% [markdown]

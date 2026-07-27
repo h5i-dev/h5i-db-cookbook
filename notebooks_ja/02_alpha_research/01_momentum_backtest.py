@@ -13,6 +13,7 @@ import pandas as pd
 import pyarrow as pa
 
 import h5i_db
+from h5i_db import col, count_star, lit, sql_expr, time_bucket, when
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("alpha_momentum"), create=True)
@@ -55,28 +56,31 @@ print(f"version {commit['sequence']}: {commit['rows_total']:,} rows")
 # 例外処理も要りません。
 
 # %%
-panel = db.sql(
-    """
-    WITH sig AS (
-        SELECT ts, symbol, adj_close,
-               lag(adj_close, 21)  OVER w AS px_1m_ago,
-               lag(adj_close, 252) OVER w AS px_12m_ago
-        FROM prices
-        WINDOW w AS (PARTITION BY symbol ORDER BY ts)
-    ),
-    month_end AS (
-        SELECT time_bucket('1mo', ts) AS month, symbol, max(ts) AS ts
-        FROM prices
-        GROUP BY month, symbol
+def lag_px(n: int):
+    """lag(adj_close, n) per symbol - there is no .lag() verb, so sql_expr."""
+    return sql_expr(f"lag(adj_close, {n})").over(partition_by="symbol", order_by="ts")
+
+
+sig = db.table("prices").with_columns(px_1m_ago=lag_px(21), px_12m_ago=lag_px(252))
+
+month_end = (
+    db.table("prices")
+    .group_by(time_bucket("1mo", col("ts")).alias("month"), "symbol")
+    .agg(month_end=col("ts").max())
+    .select(col("month_end").alias("ts"), "symbol")
+)
+
+panel = (
+    sig.join(month_end, on=["ts", "symbol"])
+    .select(
+        ts=col("ts", relation="l"),
+        symbol=col("symbol", relation="l"),
+        close=col("adj_close", relation="l"),
+        momentum=col("px_1m_ago", relation="l") / col("px_12m_ago", relation="l") - 1,
     )
-    SELECT s.ts, s.symbol,
-           s.adj_close             AS close,
-           s.px_1m_ago / s.px_12m_ago - 1 AS momentum
-    FROM sig s
-    JOIN month_end USING (ts, symbol)
-    ORDER BY s.ts, s.symbol
-    """
-).to_pandas()
+    .sort(["ts", "symbol"])
+    .to_pandas()
+)
 panel.tail(4)
 
 # %% [markdown]
@@ -197,15 +201,20 @@ db.append(
 )
 db.snapshot("mom-run-001", tables=["prices", "signals"], note="momentum backtest run 001")
 
-db.sql(
-    """
-    SELECT ts, count(*) AS names,
-           sum(CASE WHEN weight > 0 THEN 1 ELSE 0 END) AS longs,
-           sum(CASE WHEN weight < 0 THEN 1 ELSE 0 END) AS shorts
-    FROM h5i('signals', 'mom-run-001')
-    GROUP BY ts ORDER BY ts DESC LIMIT 3
-    """
-).to_pandas()
+count_if = lambda flag: when(flag).then(lit(1)).otherwise(lit(0)).sum()
+
+(
+    db.table("signals", snapshot="mom-run-001")
+    .group_by("ts")
+    .agg(
+        names=count_star(),
+        longs=count_if(col("weight") > 0),
+        shorts=count_if(col("weight") < 0),
+    )
+    .sort("ts", descending=True)
+    .limit(3)
+    .to_pandas()
+)
 
 # %%
 [

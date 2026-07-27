@@ -1,6 +1,10 @@
 # h5i-db itself: build from source until the PyPI release lands —
 #   maturin build -m ../h5i-db/crates/h5i-db-python/Cargo.toml
 #   pip install ../h5i-db/target/wheels/h5i_db-*.whl
+# Never pass --release: the workspace release profile sets panic = "abort".
+# The recipes are builder-first, so the build must include the lazy DataFrame
+# builder (`db.table(...)`, h5i-db commit 78377f7e or later). Check with:
+#   python -c "import h5i_db; print(hasattr(h5i_db.Database, 'table'))"
 pyarrow>=14
 pandas>=2.0
 polars>=1.0

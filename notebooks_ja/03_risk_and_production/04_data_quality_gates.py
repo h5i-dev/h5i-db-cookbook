@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import h5i_db
+from h5i_db import col, count_star, lit, when
 
 import cookbook_utils as cu
 
@@ -53,7 +54,7 @@ db.append(
                          preserve_index=False),
     note="production history backfill",
 )
-db.sql("SELECT count(*) AS rows, count(DISTINCT ts) AS sessions FROM prices_prod").to_pandas()
+db.table("prices_prod").select(rows=count_star(), sessions=col("ts").n_unique()).to_pandas()
 
 # %% [markdown]
 # ## 2. まずデータベースを締める
@@ -99,23 +100,28 @@ corrupt[cols].head(8)
 
 # %%
 def run_gate(day: str) -> pd.DataFrame:
-    stat = db.sql(
-        f"""
-        SELECT count(*)                                 AS rows,
-               count(DISTINCT symbol)                   AS symbols,
-               sum(CASE WHEN close IS NULL THEN 1 ELSE 0 END) AS null_closes,
-               min(close)                               AS px_min
-        FROM vendor_staging
-        WHERE ts >= '{day}T00:00:00Z' AND ts < '{day}T23:59:59Z'
-        """
-    ).to_pandas().iloc[0]
-    trailing = db.sql(
-        """
-        SELECT avg(n) AS avg_rows FROM (
-            SELECT ts, count(*) AS n FROM prices_prod GROUP BY ts ORDER BY ts DESC LIMIT 20
+    stat = (
+        db.table("vendor_staging")
+        .filter(col("ts") >= f"{day}T00:00:00Z", col("ts") < f"{day}T23:59:59Z")
+        .select(
+            rows=count_star(),
+            symbols=col("symbol").n_unique(),
+            null_closes=when(col("close").is_null()).then(lit(1)).otherwise(lit(0)).sum(),
+            px_min=col("close").min(),
         )
-        """
-    ).to_pandas()["avg_rows"].iloc[0]
+        .to_pandas()
+        .iloc[0]
+    )
+    trailing = (
+        db.table("prices_prod")
+        .group_by("ts")
+        .count("n")
+        .sort("ts", descending=True)
+        .limit(20)
+        .select(avg_rows=col("n").mean())
+        .to_pandas()["avg_rows"]
+        .iloc[0]
+    )
 
     rows, symbols = int(stat["rows"]), int(stat["symbols"])
     checks = [
@@ -188,10 +194,13 @@ gate_fixed = run_gate(day)
 assert gate_fixed["passed"].all(), "gate must pass after remediation"
 print("gate verdict: PROMOTE")
 
-staged = db.sql(
-    f"SELECT ts, symbol, close, volume FROM vendor_staging "
-    f"WHERE ts >= '{day}T00:00:00Z' ORDER BY ts, symbol"
-).to_arrow()
+staged = (
+    db.table("vendor_staging")
+    .filter(col("ts") >= f"{day}T00:00:00Z")
+    .select("ts", "symbol", "close", "volume")
+    .sort(["ts", "symbol"])
+    .to_arrow()
+)
 db.append("prices_prod", staged.cast(schema), note=f"promoted gated delivery {day}")
 
 [

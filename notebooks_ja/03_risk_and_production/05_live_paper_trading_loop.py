@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import h5i_db
+from h5i_db import col, count_star, sql_expr, time_bucket
 
 import cookbook_utils as cu
 
@@ -69,8 +70,8 @@ db.tables()
 #
 # 2銘柄について1セッションぶんのティックデータを、5分ごとの納品に刻みます。ライブのフィード
 # ハンドラの、決定的な代役です。シグナルは1分足終値に対する速い／遅い EWMA のクロスオーバーで、
-# その瞬間の `trades` の先頭に対して完全に SQL で計算します。`time_bucket` が足を作り、`ewma` の
-# ウィンドウ関数がそれを平滑化し、`row_number()` が銘柄ごとの最新の足を選びます。
+# その瞬間の `trades` の先頭に対して、すべてデータベース側で計算します。`time_bucket` が足を作り、
+# `ewma` のウィンドウ関数がそれを平滑化し、`row_number()` が銘柄ごとの最新の足を選びます。
 
 # %%
 feed = cu.make_trades(symbols=["AAPL", "MSFT"], days=1, trades_per_day=20_000).to_pandas()
@@ -78,27 +79,30 @@ feed["chunk"] = feed["ts"].dt.floor("5min")
 chunks = list(feed.groupby("chunk", sort=True))
 print(f"{len(feed):,} ticks -> {len(chunks)} five-minute deliveries")
 
-def signal_sql(relation: str) -> str:
-    return f"""
-    WITH bars AS (
-        SELECT time_bucket('1m', ts) AS bar, symbol,
-               last_value(price ORDER BY ts) AS close
-        FROM {relation}
-        GROUP BY bar, symbol
-    ), sig AS (
-        SELECT bar, symbol, close,
-               ewma(close, 0.30) OVER (PARTITION BY symbol ORDER BY bar) AS fast,
-               ewma(close, 0.05) OVER (PARTITION BY symbol ORDER BY bar) AS slow
-        FROM bars
+def signal_frame(version=None):
+    """Latest fast/slow EWMA crossover per symbol, at any read point."""
+    bars = (
+        db.table("trades", version=version)
+        .group_by(time_bucket("1m", col("ts")).alias("bar"), "symbol")
+        .agg(close=col("price").last("ts"))
     )
-    SELECT symbol, close, fast, slow
-    FROM (SELECT *, row_number() OVER (PARTITION BY symbol ORDER BY bar DESC) AS rn FROM sig)
-    WHERE rn = 1
-    ORDER BY symbol
-    """
+    return (
+        bars.with_columns(
+            fast=col("close").ewma(0.30, order_by="bar", partition_by="symbol"),
+            slow=col("close").ewma(0.05, order_by="bar", partition_by="symbol"),
+        )
+        .with_columns(
+            rn=sql_expr("row_number()").over(
+                partition_by="symbol", order_by="bar", descending=True
+            )
+        )
+        .filter(col("rn") == 1)
+        .select("symbol", "close", "fast", "slow")
+        .sort("symbol")
+    )
 
 # %% [markdown]
-# ## 3. イベントループ: チャンクを append → SQL でシグナル → 注文を append → 評価
+# ## 3. イベントループ: チャンクを append → シグナル → 注文を append → 評価
 #
 # 逐次的で決定的です。スレッドもスリープもありません。チャンクごとに、ティックのコミットが1回、
 # その先頭に対するシグナルのクエリが1回、注文のコミットが最大1回（1行ずつ打たず、バッチで）、
@@ -119,7 +123,7 @@ for chunk_ts, chunk in chunks:
     commit = db.append("trades", data)
     seq = commit["sequence"]
 
-    sig = db.sql(signal_sql("trades")).to_pandas().set_index("symbol")
+    sig = signal_frame().to_pandas().set_index("symbol")
     mark_ts = chunk_ts + pd.Timedelta(minutes=5)
 
     order_rows = []
@@ -148,7 +152,7 @@ for chunk_ts, chunk in chunks:
         marks.sort_values(["ts", "symbol"]), schema=position_schema, preserve_index=False))
     equity_track.append((mark_ts, cash + marks["mkt_value"].sum()))
 
-n_orders = db.sql("SELECT count(*) AS n FROM orders").to_pandas()["n"].iloc[0]
+n_orders = db.table("orders").select(count_star().alias("n")).to_pandas()["n"].iloc[0]
 print(f"loop done: {len(chunks)} chunks, {n_orders} orders, "
       f"final positions {pos}, final equity {equity_track[-1][1]:,.2f} USD")
 
@@ -160,8 +164,8 @@ print(f"loop done: {len(chunks)} chunks, {n_orders} orders, "
 # いるかもしれないチェックポイントファイルは要りません。
 
 # %%
-resume = db.sql(
-    "SELECT max(ts) AS last_tick, count(*) AS rows_ingested FROM trades"
+resume = db.table("trades").select(
+    last_tick=col("ts").max(), rows_ingested=count_star()
 ).to_pandas()
 print("on restart, continue the feed after:")
 resume
@@ -169,29 +173,37 @@ resume
 # %% [markdown]
 # ## 5. 発注根拠: シグナルの入力をそのまま再生する
 #
-# どの注文も `data_version` を持っています。1件を監査するには、*同じ*シグナルの SQL を
-# `h5i('trades', <version>)` に向けるだけです。ループが見た先頭への O(1) のタイムトラベルで、
+# どの注文も `data_version` を持っています。1件を監査するには、*同じ*シグナルのフレームを
+# そのバージョンに向けるだけです。ループが見た先頭への O(1) のタイムトラベルで、
 # 判断を確認できます。「シグナルは買いと言っていたはずだ」と「これがそのシグナルです。当時の
 # バイトから計算し直して、買いと言っています」の違いがここにあります。
 
 # %%
-last_order = db.sql(
-    "SELECT ts, symbol, side, qty, price, data_version FROM orders ORDER BY ts DESC LIMIT 1"
-).to_pandas().iloc[0]
+last_order = (
+    db.table("orders")
+    .select("ts", "symbol", "side", "qty", "price", "data_version")
+    .sort("ts", descending=True)
+    .limit(1)
+    .to_pandas()
+    .iloc[0]
+)
 print("auditing order:", dict(last_order))
 
-replayed = db.sql(
-    signal_sql(f"h5i('trades', {int(last_order['data_version'])})")
-).to_pandas().set_index("symbol")
+replayed = (
+    signal_frame(version=int(last_order["data_version"]))
+    .to_pandas()
+    .set_index("symbol")
+)
 row = replayed.loc[last_order["symbol"]]
 replayed_desired = TARGET if row["fast"] > row["slow"] else 0
 
-held_after = db.sql(
-    f"""
-    SELECT position FROM positions
-    WHERE symbol = '{last_order["symbol"]}' AND ts = '{last_order["ts"].isoformat()}'
-    """
-).to_pandas()["position"].iloc[0]
+held_after = (
+    db.table("positions")
+    .filter(col("symbol") == last_order["symbol"], col("ts") == last_order["ts"].isoformat())
+    .select("position")
+    .to_pandas()["position"]
+    .iloc[0]
+)
 
 print(f"replayed signal at v{int(last_order['data_version'])}: "
       f"fast={row['fast']:.4f} slow={row['slow']:.4f} -> desired position {replayed_desired}")
@@ -229,9 +241,13 @@ db.sql(f"SELECT * FROM tail('orders', {after['sequence']}, 50) LIMIT {n}",
 import matplotlib.pyplot as plt
 
 eq = pd.DataFrame(equity_track, columns=["ts", "equity"]).set_index("ts")
-posn = db.sql(
-    "SELECT ts, symbol, position FROM positions ORDER BY ts"
-).to_pandas().pivot(index="ts", columns="symbol", values="position")
+posn = (
+    db.table("positions")
+    .select("ts", "symbol", "position")
+    .sort("ts")
+    .to_pandas()
+    .pivot(index="ts", columns="symbol", values="position")
+)
 
 fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 6), sharex=True,
                                gridspec_kw={"height_ratios": [2, 1]})

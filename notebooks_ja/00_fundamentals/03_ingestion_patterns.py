@@ -21,6 +21,7 @@ import pyarrow.csv as pacsv
 import pyarrow.parquet as pq
 
 import h5i_db
+from h5i_db import col, count_star, time_bucket
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("00_ingestion"), create=True)
@@ -213,14 +214,17 @@ print(f"compacted: {before['segments']} segments -> {commit['segments_total']}, 
 ]
 
 # %%
-# One tape, five formats, eleven commits - and SQL sees a single clean table.
-db.sql(
-    """
-    SELECT time_bucket('1d', ts) AS session, count(*) AS trades,
-           round(sum(price * size) / 1e6, 1) AS notional_mm
-    FROM trades GROUP BY session ORDER BY session
-    """
-).to_pandas()
+# One tape, five formats, eleven commits - and a query sees a single clean table.
+(
+    db.table("trades")
+    .group_by(time_bucket("1d", col("ts")).alias("session"))
+    .agg(
+        trades=count_star(),
+        notional_mm=((col("price") * col("size")).sum() / 1e6).round(1),
+    )
+    .sort("session")
+    .to_pandas()
+)
 
 # %% [markdown]
 # ## まとめ

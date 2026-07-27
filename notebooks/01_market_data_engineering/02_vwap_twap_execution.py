@@ -19,6 +19,7 @@ import pyarrow as pa
 import matplotlib.pyplot as plt
 
 import h5i_db
+from h5i_db import col, time_bucket, vwap, wavg
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("mde_vwap"), create=True)
@@ -78,25 +79,25 @@ print(f"{len(tr):,} trades derived from {len(qp):,} quotes")
 # `'30m'` gives the interval VWAPs an execution scheduler would target.
 
 # %%
-day_vwap = db.sql(
-    """
-    SELECT time_bucket('1d', ts, 'America/New_York') AS session, symbol,
-           vwap(price, size) AS day_vwap,
-           sum(size)         AS volume
-    FROM trades GROUP BY 1, 2 ORDER BY 1, 2
-    """
-).to_pandas()
+SESSION = time_bucket("1d", col("ts"), timezone="America/New_York")
+
+day_vwap = (
+    db.table("trades")
+    .group_by(SESSION.alias("session"), "symbol")
+    .agg(day_vwap=vwap(col("price"), col("size")), volume=col("size").sum())
+    .sort(["session", "symbol"])
+    .to_pandas()
+)
 day_vwap
 
 # %%
-ivwap = db.sql(
-    """
-    SELECT time_bucket('30m', ts) AS interval_start, symbol,
-           vwap(price, size) AS interval_vwap,
-           sum(size)         AS volume
-    FROM trades GROUP BY 1, 2 ORDER BY 1, 2
-    """
-).to_pandas()
+ivwap = (
+    db.table("trades")
+    .group_by(time_bucket("30m", col("ts")).alias("interval_start"), "symbol")
+    .agg(interval_vwap=vwap(col("price"), col("size")), volume=col("size").sum())
+    .sort(["interval_start", "symbol"])
+    .to_pandas()
+)
 ivwap.head(6)
 
 # %% [markdown]
@@ -106,22 +107,26 @@ ivwap.head(6)
 # U-shaped volume profile, VWAP concentrates weight at the open and close -
 # so whenever the price near the extremes differs from the middle of the
 # day, the two benchmarks part ways. We build TWAP from 1-minute closes
-# (bars as a CTE, `last_value(... ORDER BY ts)` for the close) and measure
-# the divergence per session in basis points.
+# (an intermediate frame, `.last("ts")` for the close) and measure the
+# divergence per session in basis points. Aggregating a frame that is
+# already an aggregate just nests it - the CTE writes itself.
 
 # %%
-twap = db.sql(
-    """
-    WITH bars_1m AS (
-        SELECT time_bucket('1m', ts) AS bar, symbol,
-               last_value(price ORDER BY ts) AS close
-        FROM trades GROUP BY 1, 2
+bars_1m = (
+    db.table("trades")
+    .group_by(time_bucket("1m", col("ts")).alias("bar"), "symbol")
+    .agg(close=col("price").last("ts"))
+)
+
+twap = (
+    bars_1m.group_by(
+        time_bucket("1d", col("bar"), timezone="America/New_York").alias("session"),
+        "symbol",
     )
-    SELECT time_bucket('1d', bar, 'America/New_York') AS session, symbol,
-           avg(close) AS twap
-    FROM bars_1m GROUP BY 1, 2 ORDER BY 1, 2
-    """
-).to_pandas()
+    .agg(twap=col("close").mean())
+    .sort(["session", "symbol"])
+    .to_pandas()
+)
 
 bench = day_vwap.merge(twap, on=["session", "symbol"])
 bench["vwap_minus_twap_bps"] = (bench["day_vwap"] / bench["twap"] - 1) * 1e4
@@ -134,25 +139,24 @@ bench[["session", "symbol", "day_vwap", "twap", "vwap_minus_twap_bps"]]
 # so cumulative VWAP needs no manual `sum(pv)/sum(v)` bookkeeping:
 
 # %%
-run = db.sql(
-    """
-    SELECT ts, price,
-           vwap(price, size) OVER (ORDER BY ts) AS running_vwap
-    FROM trades
-    WHERE symbol = 'AAPL'
-      AND ts >= '2026-06-02T00:00:00Z' AND ts < '2026-06-03T00:00:00Z'
-    ORDER BY ts
-    """
-).to_pandas()
-closes_1m = db.sql(
-    """
-    SELECT time_bucket('1m', ts) AS bar, last_value(price ORDER BY ts) AS close
-    FROM trades
-    WHERE symbol = 'AAPL'
-      AND ts >= '2026-06-02T00:00:00Z' AND ts < '2026-06-03T00:00:00Z'
-    GROUP BY 1 ORDER BY 1
-    """
-).to_pandas()
+def aapl_window(t_lo: str, t_hi: str):
+    return db.table("trades").filter(
+        col("symbol") == "AAPL", col("ts") >= t_lo, col("ts") < t_hi
+    )
+
+
+session = aapl_window("2026-06-02T00:00:00Z", "2026-06-03T00:00:00Z")
+
+run = session.select(
+    "ts", "price", running_vwap=vwap(col("price"), col("size")).over(order_by="ts")
+).sort("ts").to_pandas()
+
+closes_1m = (
+    session.group_by(time_bucket("1m", col("ts")).alias("bar"))
+    .agg(close=col("price").last("ts"))
+    .sort("bar")
+    .to_pandas()
+)
 closes_1m["running_twap"] = closes_1m["close"].expanding().mean()
 
 fig, ax = plt.subplots(figsize=(10, 4))
@@ -204,14 +208,16 @@ print(f"{len(fills):,} fills, {fills['size'].sum():,} shares, "
 # full quote table.
 
 # %%
-qwin = db.sql(
-    """
-    SELECT * FROM quotes
-    WHERE symbol = 'AAPL'
-      AND ts >= '2026-06-02T13:50:00Z' AND ts < '2026-06-02T14:10:00Z'
-    ORDER BY ts
-    """
-).to_arrow()
+qwin = (
+    db.table("quotes")
+    .filter(
+        col("symbol") == "AAPL",
+        col("ts") >= "2026-06-02T13:50:00Z",
+        col("ts") < "2026-06-02T14:10:00Z",
+    )
+    .sort("ts")
+    .to_arrow()
+)
 db.create_table("quotes_arrival", quote_schema, time_column="ts", sort_key=["ts", "symbol"])
 db.append("quotes_arrival", qwin.cast(quote_schema))
 
@@ -221,20 +227,23 @@ parent = pa.table(
 db.create_table("parent", parent.schema, time_column="ts", sort_key=["ts", "symbol"])
 db.append("parent", parent)
 
-arrival = db.sql(
-    """
-    SELECT ts, symbol, ts_right AS quote_ts, (bid + ask) / 2 AS arrival_mid
-    FROM asof_join('parent', 'quotes_arrival', 'ts', 'ts', 'symbol')
-    """
-).to_pandas()
+MID = (col("bid") + col("ask")) / 2
 
-direct = db.sql(
-    """
-    SELECT (bid + ask) / 2 AS mid FROM quotes
-    WHERE symbol = 'AAPL' AND ts <= '2026-06-02T14:00:00Z'
-    ORDER BY ts DESC LIMIT 1
-    """
-).to_pandas()["mid"][0]
+arrival = (
+    db.table("parent")
+    .join_asof(db.table("quotes_arrival"), on="ts", by="symbol")
+    .select("ts", "symbol", quote_ts=col("ts_right"), arrival_mid=MID)
+    .to_pandas()
+)
+
+direct = (
+    db.table("quotes")
+    .filter(col("symbol") == "AAPL", col("ts") <= "2026-06-02T14:00:00Z")
+    .sort("ts", descending=True)
+    .limit(1)
+    .select(mid=MID)
+    .to_pandas()["mid"][0]
+)
 assert np.isclose(arrival["arrival_mid"][0], direct)
 arrival
 
@@ -244,14 +253,11 @@ arrival
 # Now the scorecard: fill VWAP vs interval VWAP and vs arrival.
 
 # %%
-fill_vwap = db.sql("SELECT vwap(price, size) AS v FROM fills").to_pandas()["v"][0]
-mkt_vwap = db.sql(
-    """
-    SELECT vwap(price, size) AS v FROM trades
-    WHERE symbol = 'AAPL'
-      AND ts >= '2026-06-02T14:00:00Z' AND ts < '2026-06-02T15:00:00Z'
-    """
-).to_pandas()["v"][0]
+VWAP = vwap(col("price"), col("size"))
+hour = aapl_window("2026-06-02T14:00:00Z", "2026-06-02T15:00:00Z")
+
+fill_vwap = db.table("fills").select(v=VWAP).to_pandas()["v"][0]
+mkt_vwap = hour.select(v=VWAP).to_pandas()["v"][0]
 arrival_mid = arrival["arrival_mid"][0]
 
 print(f"arrival mid          : {arrival_mid:.4f}")
@@ -262,15 +268,7 @@ print(f"slippage vs arrival mid  : {(fill_vwap / arrival_mid - 1) * 1e4:+.2f} bp
 
 # %%
 fp = fills
-mkt = db.sql(
-    """
-    SELECT ts, price, vwap(price, size) OVER (ORDER BY ts) AS running_vwap
-    FROM trades
-    WHERE symbol = 'AAPL'
-      AND ts >= '2026-06-02T14:00:00Z' AND ts < '2026-06-02T15:00:00Z'
-    ORDER BY ts
-    """
-).to_pandas()
+mkt = hour.select("ts", "price", running_vwap=VWAP.over(order_by="ts")).sort("ts").to_pandas()
 
 fig, ax = plt.subplots(figsize=(10, 4))
 ax.plot(mkt["ts"], mkt["price"], lw=0.3, color="0.7", label="market trades")
@@ -295,8 +293,9 @@ fig.tight_layout()
 # Migrating from q? `w wavg x` is weight-first; h5i-db ships both spellings.
 
 # %%
-eq = db.sql(
-    "SELECT vwap(price, size) AS vwap, wavg(size, price) AS wavg FROM fills"
+eq = db.table("fills").select(
+    vwap=vwap(col("price"), col("size")),
+    wavg=wavg(col("size"), col("price")),
 ).to_pandas()
 assert np.isclose(eq["vwap"][0], eq["wavg"][0])
 eq

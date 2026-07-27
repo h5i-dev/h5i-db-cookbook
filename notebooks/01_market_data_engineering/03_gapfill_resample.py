@@ -17,6 +17,7 @@ import pyarrow as pa
 import matplotlib.pyplot as plt
 
 import h5i_db
+from h5i_db import col, count_star, time_bucket
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("mde_gapfill"), create=True)
@@ -46,7 +47,7 @@ trade_schema = pa.schema(
 db.create_table("trades", trade_schema, time_column="ts", sort_key=["ts", "symbol"])
 db.append("trades", pa.Table.from_pandas(tp, preserve_index=False).cast(trade_schema))
 
-db.sql("SELECT symbol, count(*) AS n_trades FROM trades GROUP BY 1 ORDER BY 1").to_pandas()
+db.table("trades").group_by("symbol").agg(n_trades=count_star()).sort("symbol").to_pandas()
 
 # %% [markdown]
 # ## 2. Bars with holes
@@ -62,15 +63,15 @@ db.sql("SELECT symbol, count(*) AS n_trades FROM trades GROUP BY 1 ORDER BY 1").
 bar_schema = pa.schema(
     [ts_field, pa.field("close", pa.float64()), pa.field("volume", pa.int64())]
 )
-nvda_bars = db.sql(
-    """
-    SELECT time_bucket('1m', ts) AS ts,
-           last_value(price ORDER BY ts) AS close,
-           sum(size) AS volume
-    FROM trades WHERE symbol = 'NVDA'
-    GROUP BY 1 ORDER BY 1
-    """
-).to_arrow()
+nvda_bars = (
+    db.table("trades")
+    .filter(col("symbol") == "NVDA")
+    .group_by(time_bucket("1m", col("ts")).alias("bar"))
+    .agg(close=col("price").last("ts"), volume=col("size").sum())
+    .select(col("bar").alias("ts"), "close", "volume")
+    .sort("ts")
+    .to_arrow()
+)
 db.create_table("bars_nvda_1m", bar_schema, time_column="ts", sort_key=["ts"])
 db.append("bars_nvda_1m", nvda_bars.cast(bar_schema))
 

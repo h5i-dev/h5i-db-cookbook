@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import h5i_db
+from h5i_db import col, sql_expr
 
 import cookbook_utils as cu
 
@@ -54,20 +55,24 @@ db.append(
 # %% [markdown]
 # ## 2. 読み取り点を引数に取るバックテスト
 #
-# 再現性を可能にする設計上の判断はただ1つ、バックテストが `FROM prices` を決め打ちしないこと
-# です。受け取るのは*関係*で、ライブのテーブルでも、固定したスナップショット
-# `h5i('prices', 'bt-run-001')` でも、バージョン番号でも、as-of のタイムスタンプでも構いません。
-# そして下流のすべてが、その読み取り点とパラメータの純粋な関数になります。
+# 再現性を可能にする設計上の判断はただ1つ、バックテストが読み取り点を決め打ちしないことです。
+# 読み取り点は引数で受け取ります。ライブのテーブルでも、固定したスナップショットでも、
+# バージョン番号でも、as-of のタイムスタンプでも構いません。そして下流のすべてが、その読み取り点と
+# パラメータの純粋な関数になります。`db.table(name, snapshot=..., version=...)` なら、固定は
+# キーワード引数1つで済みます。クエリ文字列に関係名を差し込む必要はありません。
 #
 # 戦略そのものはあえて素っ気ないものです（126日モメンタム、月次リバランス、上位5銘柄を等
 # ウェイト）。主役は配管であって、アルファではありません。
 
 # %%
-def run_backtest(read_point: str, lookback: int = 126, top_n: int = 5) -> dict:
-    """Momentum backtest against any h5i-db relation. Deterministic."""
-    px = db.sql(
-        f"SELECT ts, symbol, close FROM {read_point} ORDER BY ts, symbol"
-    ).to_pandas()
+def run_backtest(snapshot=None, version=None, lookback: int = 126, top_n: int = 5) -> dict:
+    """Momentum backtest against any read point of `prices`. Deterministic."""
+    px = (
+        db.table("prices", snapshot=snapshot, version=version)
+        .select("ts", "symbol", "close")
+        .sort(["ts", "symbol"])
+        .to_pandas()
+    )
     wide = px.pivot(index="ts", columns="symbol", values="close").sort_index()
 
     mom = wide.pct_change(lookback)
@@ -96,7 +101,7 @@ def run_backtest(read_point: str, lookback: int = 126, top_n: int = 5) -> dict:
 # %%
 db.snapshot("bt-run-001", tables=["prices"], note="data pin for momentum study 001")
 
-run1 = run_backtest("h5i('prices', 'bt-run-001')")
+run1 = run_backtest(snapshot="bt-run-001")
 print(f"run 1  sharpe={run1['sharpe']:.6f}  curve sha256={run1['sha256'][:16]}...")
 
 # %% [markdown]
@@ -133,7 +138,7 @@ db.write("prices", restated, note="vendor restatement: dividend-adjustment fix, 
 # コード、同じパラメータ、違う Sharpe。再現不能の事故を2行に煮詰めた姿です。
 
 # %%
-run2 = run_backtest("prices")
+run2 = run_backtest()  # live head
 print(f"run 1 (pinned data): sharpe={run1['sharpe']:.6f}")
 print(f"run 2 (live table):  sharpe={run2['sharpe']:.6f}")
 print(f"divergence: {abs(run2['sharpe'] - run1['sharpe']):.4f} Sharpe units")
@@ -163,7 +168,7 @@ fig.tight_layout()
 # 不能なセグメントだからです。
 
 # %%
-run3 = run_backtest("h5i('prices', 'bt-run-001')")
+run3 = run_backtest(snapshot="bt-run-001")
 
 assert run3["sha256"] == run1["sha256"], "pinned re-run must be bit-identical"
 assert np.array_equal(run3["curve"].to_numpy(), run1["curve"].to_numpy())
@@ -193,9 +198,9 @@ db.create_table("runs", runs_schema, time_column="ts")
 
 params = json.dumps({"strategy": "momentum", "lookback": 126, "top_n": 5, "universe": 20})
 for run_id, read_point, res in [
-    ("bt-run-001", "h5i('prices', 'bt-run-001')", run1),
+    ("bt-run-001", "snapshot bt-run-001", run1),
     ("bt-run-001-naive-rerun", "prices (live head)", run2),
-    ("bt-run-001-verify", "h5i('prices', 'bt-run-001')", run3),
+    ("bt-run-001-verify", "snapshot bt-run-001", run3),
 ]:
     row = pa.table(
         {
@@ -209,13 +214,16 @@ for run_id, read_point, res in [
     )
     db.append("runs", row, note=f"register {run_id}")
 
-db.sql(
-    """
-    SELECT run_id, read_point, round(sharpe, 4) AS sharpe,
-           substr(curve_sha256, 1, 12) AS digest
-    FROM runs ORDER BY ts
-    """
-).to_pandas()
+(
+    db.table("runs")
+    .select(
+        "run_id", "read_point",
+        sharpe=col("sharpe").round(4),
+        digest=sql_expr("substr(curve_sha256, 1, 12)"),
+    )
+    .sort("ts")
+    .to_pandas()
+)
 
 # %% [markdown]
 # ## まとめ

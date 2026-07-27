@@ -19,6 +19,7 @@ import pandas as pd
 import pyarrow as pa
 
 import h5i_db
+from h5i_db import col, sql_expr
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("alpha_leadlag"), create=True)
@@ -88,14 +89,16 @@ print(f"{len(fx):,} ticks over 24h ({n:,} per pair, ~{n / 86_400:.1f}/sec)")
 # 格子を前方補完してずらすだけです。
 
 # %%
-bucketed = db.sql(
-    """
-    SELECT time_bucket('250ms', ts) AS bucket, pair,
-           last_value((bid + ask) / 2 ORDER BY ts) AS mid
-    FROM fx
-    GROUP BY bucket, pair
-    """
-).to_pandas()
+# The builder's time_bucket() parses whole-second units only, so the 250 ms
+# width comes in through the escape hatch - everything else is still verbs.
+BUCKET_250MS = sql_expr("time_bucket('250ms', ts)")
+
+bucketed = (
+    db.table("fx")
+    .group_by(BUCKET_250MS.alias("bucket"), "pair")
+    .agg(mid=((col("bid") + col("ask")) / 2).last("ts"))
+    .to_pandas()
+)
 
 grid = bucketed.pivot(index="bucket", columns="pair", values="mid")
 full_index = pd.date_range(grid.index.min(), grid.index.max(), freq="250ms", tz="UTC")
@@ -167,14 +170,17 @@ print(f"QA window: {len(gbp_w):,} follower ticks, {len(eur_w):,} leader ticks")
 
 rows = []
 for tol_ms in (50, 100, 250, 500, 1000, 5000):
-    j = db.sql(
-        f"""
-        SELECT ts, (bid + ask) / 2 AS gbp_mid,
-               ts_right, (bid_right + ask_right) / 2 AS eur_mid
-        FROM asof_join('gbp_qa', 'eur_qa', 'ts', 'ts', 'base', 'backward', {tol_ms * 1000})
-        ORDER BY ts
-        """
-    ).to_pandas()
+    j = (
+        db.table("gbp_qa")
+        .join_asof(db.table("eur_qa"), on="ts", by="base", tolerance=tol_ms * 1000)
+        .select(
+            "ts", "ts_right",
+            gbp_mid=(col("bid") + col("ask")) / 2,
+            eur_mid=(col("bid_right") + col("ask_right")) / 2,
+        )
+        .sort("ts")
+        .to_pandas()
+    )
     assert len(j) == len(gbp_w), "asof_join must return one row per left tick"
     matched = j.dropna(subset=["eur_mid"])
     r = np.log(matched[["gbp_mid", "eur_mid"]]).diff().dropna()
@@ -234,13 +240,13 @@ def hy_corr(t_a, r_a, t_b, r_b):
     return cov / np.sqrt((r_a**2).sum() * (r_b**2).sum())
 
 # 2-hour subsample of raw ticks, pulled with a pruned time-range scan
-sub = db.sql(
-    """
-    SELECT ts, pair, (bid + ask) / 2 AS mid FROM fx
-    WHERE ts >= '2026-06-01T06:00:00Z' AND ts < '2026-06-01T08:00:00Z'
-    ORDER BY ts
-    """
-).to_pandas()
+sub = (
+    db.table("fx")
+    .filter(col("ts") >= "2026-06-01T06:00:00Z", col("ts") < "2026-06-01T08:00:00Z")
+    .select("ts", "pair", mid=(col("bid") + col("ask")) / 2)
+    .sort("ts")
+    .to_pandas()
+)
 te, tg = {}, {}
 for p, g in sub.groupby("pair"):
     ts_us = g["ts"].astype("int64").to_numpy()
@@ -294,13 +300,16 @@ eq_schema = pa.schema(
 db.create_table("equity_daily", eq_schema, time_column="ts", sort_key=["ts", "symbol"])
 db.append("equity_daily", pa.Table.from_pandas(pair_df, preserve_index=False).cast(eq_schema), note="KO/PEP daily")
 
-eq = db.sql(
-    """
-    SELECT ts, symbol,
-           adj_close / lag(adj_close) OVER (PARTITION BY symbol ORDER BY ts) - 1 AS ret
-    FROM equity_daily ORDER BY ts
-    """
-).to_pandas()
+eq = (
+    db.table("equity_daily")
+    .select(
+        "ts", "symbol",
+        ret=col("adj_close")
+        / sql_expr("lag(adj_close)").over(partition_by="symbol", order_by="ts") - 1,
+    )
+    .sort("ts")
+    .to_pandas()
+)
 eq_panel = eq.pivot(index="ts", columns="symbol", values="ret").dropna()
 eq_band = 1.96 / np.sqrt(len(eq_panel))
 eq_ccf = {k: eq_panel["KO"].corr(eq_panel["PEP"].shift(-k)) for k in range(-5, 6)}

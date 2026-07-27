@@ -22,6 +22,7 @@ import pandas as pd
 import pyarrow as pa
 
 import h5i_db
+from h5i_db import col, count_star, sql_expr
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("prod_options"), create=True)
@@ -61,16 +62,23 @@ for day_ts, day_chain in chain_df.groupby("ts"):
 # 復元できます。以下ではこれを再利用して、行使価格をマネーネスの軸に載せます。
 
 # %%
-spot = db.sql(
-    """
-    SELECT c.ts, avg(c.strike + c.mid - p.mid) AS spot
-    FROM chain c
-    JOIN chain p ON c.ts = p.ts AND c.expiry = p.expiry AND c.strike = p.strike
-    WHERE c.cp = 'C' AND p.cp = 'P'
-    GROUP BY c.ts
-    ORDER BY c.ts
-    """
-).to_pandas()
+# Put-call parity as a self-join: the calls frame joined to the puts frame on
+# (ts, expiry, strike). Holding each side in a variable is what makes the
+# self-join readable.
+calls = db.table("chain").filter(col("cp") == "C")
+puts = db.table("chain").filter(col("cp") == "P")
+
+SPOT = (
+    calls.join(puts, on=["ts", "expiry", "strike"])
+    .group_by(col("ts", relation="l").alias("ts"))
+    .agg(
+        spot=(
+            col("strike", relation="l") + col("mid", relation="l") - col("mid", relation="r")
+        ).mean()
+    )
+)
+
+spot = SPOT.sort("ts").to_pandas()
 spot
 
 # %% [markdown]
@@ -81,28 +89,27 @@ spot
 # タイムスタンプ列から pandas で導出します。
 
 # %%
-atm = db.sql(
-    """
-    WITH spot AS (
-        SELECT c.ts, avg(c.strike + c.mid - p.mid) AS spot
-        FROM chain c
-        JOIN chain p ON c.ts = p.ts AND c.expiry = p.expiry AND c.strike = p.strike
-        WHERE c.cp = 'C' AND p.cp = 'P'
-        GROUP BY c.ts
-    ),
-    ranked AS (
-        SELECT c.ts, c.expiry, c.iv, s.spot,
-               row_number() OVER (PARTITION BY c.ts, c.expiry
-                                  ORDER BY abs(c.strike / s.spot - 1)) AS rn
-        FROM chain c
-        JOIN spot s ON c.ts = s.ts
-        WHERE c.cp = 'C'
+# The parity spot frame is reused here rather than re-written: join it back
+# to the call chain, then rank strikes by moneyness distance.
+atm = (
+    calls.join(SPOT, on="ts")
+    .select(
+        ts=col("ts", relation="l"),
+        expiry=col("expiry", relation="l"),
+        atm_iv=col("iv", relation="l"),
+        spot=col("spot", relation="r"),
+        moneyness_gap=(col("strike", relation="l") / col("spot", relation="r") - 1).abs(),
     )
-    SELECT ts, expiry, iv AS atm_iv, spot
-    FROM ranked WHERE rn = 1
-    ORDER BY ts, expiry
-    """
-).to_pandas()
+    .with_columns(
+        rn=sql_expr("row_number()").over(
+            partition_by=["ts", "expiry"], order_by="moneyness_gap"
+        )
+    )
+    .filter(col("rn") == 1)
+    .select("ts", "expiry", "atm_iv", "spot")
+    .sort(["ts", "expiry"])
+    .to_pandas()
+)
 atm["tenor_d"] = (atm["expiry"] - atm["ts"]).dt.days
 atm.head(7)
 
@@ -133,6 +140,8 @@ fig.tight_layout()
 # 「25Δ にいちばん近い」が 25Δ からかなり離れうるので、短期側はそのつもりで読んでください。
 
 # %%
+# Three ranked CTEs joined pairwise: .join() is binary and aliases each side
+# l/r, so a three-way join would nest into unreadable qualifiers. SQL wins.
 rr_bf = db.sql(
     """
     WITH c25 AS (SELECT ts, expiry, iv,

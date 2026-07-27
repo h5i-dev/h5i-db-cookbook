@@ -17,6 +17,7 @@ import pyarrow as pa
 from scipy import stats
 
 import h5i_db
+from h5i_db import col, count_star, sql_expr, time_bucket
 import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("alpha_factors"), create=True)
@@ -59,22 +60,19 @@ print(f"prices: {prices.num_rows:,} rows   fundamentals: {funda.num_rows:,} rows
 # derived data is data, and it should be versioned like everything else.
 
 # %%
-fund_sig = db.sql(
-    """
-    WITH g AS (
-        SELECT ts, symbol, book_value_m,
-               revenue_m / lag(revenue_m) OVER (PARTITION BY symbol ORDER BY ts) - 1 AS rev_g
-        FROM fundamentals
+PREV_REV = sql_expr("lag(revenue_m)").over(partition_by="symbol", order_by="ts")
+
+fund_sig = (
+    db.table("fundamentals")
+    .with_columns(rev_g=col("revenue_m") / PREV_REV - 1)
+    .with_columns(
+        rev_g_std=col("rev_g").rolling_std(4, order_by="ts", partition_by="symbol"),
+        n_g=col("rev_g").rolling_count(4, order_by="ts", partition_by="symbol"),
     )
-    SELECT ts, symbol, book_value_m, rev_g,
-           stddev(rev_g) OVER (PARTITION BY symbol ORDER BY ts
-                               ROWS BETWEEN 3 PRECEDING AND CURRENT ROW) AS rev_g_std,
-           count(rev_g)  OVER (PARTITION BY symbol ORDER BY ts
-                               ROWS BETWEEN 3 PRECEDING AND CURRENT ROW) AS n_g
-    FROM g
-    ORDER BY ts, symbol
-    """
-).to_arrow()
+    .select("ts", "symbol", "book_value_m", "rev_g", "rev_g_std", "n_g")
+    .sort(["ts", "symbol"])
+    .to_arrow()
+)
 
 fs_schema = pa.schema(
     [
@@ -99,25 +97,30 @@ db.append("fund_signals", fund_sig.cast(fs_schema), note="rev growth + 4q stabil
 # side we want fundamentals attached to.
 
 # %%
-panel_tbl = db.sql(
-    """
-    WITH sig AS (
-        SELECT ts, symbol, close,
-               lag(close, 21)  OVER w AS px_1m_ago,
-               lag(close, 252) OVER w AS px_12m_ago
-        FROM prices
-        WINDOW w AS (PARTITION BY symbol ORDER BY ts)
-    ),
-    month_end AS (
-        SELECT time_bucket('1mo', ts) AS month, symbol, max(ts) AS ts
-        FROM prices GROUP BY month, symbol
+def lag_close(n: int):
+    return sql_expr(f"lag(close, {n})").over(partition_by="symbol", order_by="ts")
+
+
+sig = db.table("prices").with_columns(px_1m_ago=lag_close(21), px_12m_ago=lag_close(252))
+
+month_end = (
+    db.table("prices")
+    .group_by(time_bucket("1mo", col("ts")).alias("month"), "symbol")
+    .agg(month_end=col("ts").max())
+    .select(col("month_end").alias("ts"), "symbol")
+)
+
+panel_tbl = (
+    sig.join(month_end, on=["ts", "symbol"])
+    .select(
+        ts=col("ts", relation="l"),
+        symbol=col("symbol", relation="l"),
+        close=col("close", relation="l"),
+        momentum=col("px_1m_ago", relation="l") / col("px_12m_ago", relation="l") - 1,
     )
-    SELECT s.ts, s.symbol, s.close,
-           s.px_1m_ago / s.px_12m_ago - 1 AS momentum
-    FROM sig s JOIN month_end USING (ts, symbol)
-    ORDER BY s.ts, s.symbol
-    """
-).to_arrow()
+    .sort(["ts", "symbol"])
+    .to_arrow()
+)
 
 panel_schema = pa.schema(
     [
@@ -129,7 +132,7 @@ panel_schema = pa.schema(
 )
 db.create_table("panel_me", panel_schema, time_column="ts", sort_key=["ts", "symbol"])
 db.append("panel_me", panel_tbl.cast(panel_schema), note="month-end closes + 12-1 momentum")
-db.sql("SELECT count(*) AS rows, count(DISTINCT ts) AS months FROM panel_me").to_pandas()
+db.table("panel_me").select(rows=count_star(), months=col("ts").n_unique()).to_pandas()
 
 # %% [markdown]
 # ## 4. The point-in-time join
@@ -142,15 +145,14 @@ db.sql("SELECT count(*) AS rows, count(DISTINCT ts) AS months FROM panel_me").to
 # used; months before a symbol's first report get NULLs, as they should.
 
 # %%
-pit = db.sql(
-    """
-    SELECT ts, symbol, close, momentum,
-           book_value_m, rev_g_std, n_g,
-           ts_right AS report_ts
-    FROM asof_join('panel_me', 'fund_signals', 'ts', 'ts', 'symbol')
-    ORDER BY ts, symbol
-    """
-).to_pandas()
+pit = (
+    db.table("panel_me")
+    .join_asof(db.table("fund_signals"), on="ts", by="symbol")
+    .select("ts", "symbol", "close", "momentum", "book_value_m", "rev_g_std", "n_g",
+            report_ts=col("ts_right"))
+    .sort(["ts", "symbol"])
+    .to_pandas()
+)
 pit["staleness_days"] = (pit["ts"] - pit["report_ts"]).dt.days
 pit[["ts", "symbol", "close", "momentum", "book_value_m", "report_ts", "staleness_days"]].tail(4)
 
@@ -178,9 +180,9 @@ pit["quality"] = np.where(pit["n_g"] == 4, -pit["rev_g_std"], np.nan)
 FACTORS = ["value", "momentum", "quality"]
 
 
-def zscore_by_month(df: pd.DataFrame, col: str) -> pd.Series:
-    g = df.groupby("ts")[col]
-    return ((df[col] - g.transform("mean")) / g.transform("std")).clip(-3, 3)
+def zscore_by_month(df: pd.DataFrame, field: str) -> pd.Series:
+    g = df.groupby("ts")[field]
+    return ((df[field] - g.transform("mean")) / g.transform("std")).clip(-3, 3)
 
 
 for f in FACTORS:
@@ -208,12 +210,12 @@ pit = pit.merge(
 )
 
 
-def monthly_ic(df: pd.DataFrame, col: str) -> pd.Series:
+def monthly_ic(df: pd.DataFrame, field: str) -> pd.Series:
     out = {}
-    for ts, g in df.dropna(subset=[col, "fwd_ret"]).groupby("ts"):
+    for ts, g in df.dropna(subset=[field, "fwd_ret"]).groupby("ts"):
         if len(g) >= 20:
-            out[ts] = stats.spearmanr(g[col], g["fwd_ret"])[0]
-    return pd.Series(out, name=col)
+            out[ts] = stats.spearmanr(g[field], g["fwd_ret"])[0]
+    return pd.Series(out, name=field)
 
 
 ics = pd.concat([monthly_ic(pit, f"z_{f}") for f in FACTORS + ["combo"]], axis=1)
@@ -248,11 +250,11 @@ fig.tight_layout()
 # Q5 − Q1.
 
 # %%
-def quintile_spread(df: pd.DataFrame, col: str) -> pd.Series:
+def quintile_spread(df: pd.DataFrame, field: str) -> pd.Series:
     out = {}
-    for ts, g in df.dropna(subset=[col, "fwd_ret"]).groupby("ts"):
+    for ts, g in df.dropna(subset=[field, "fwd_ret"]).groupby("ts"):
         if len(g) >= 25:
-            q = pd.qcut(g[col].rank(method="first"), 5, labels=False)
+            q = pd.qcut(g[field].rank(method="first"), 5, labels=False)
             out[ts] = g["fwd_ret"][q == 4].mean() - g["fwd_ret"][q == 0].mean()
     return pd.Series(out)
 
@@ -314,13 +316,14 @@ db.snapshot(
     note="monthly factor library build",
 )
 
-db.sql(
-    """
-    SELECT ts, count(*) AS names, avg(z_combo) AS combo_mean, stddev(z_momentum) AS mom_z_std
-    FROM h5i('factor_panel', 'factor-build-001')
-    GROUP BY ts ORDER BY ts DESC LIMIT 3
-    """
-).to_pandas().set_index("ts").round(3)
+(
+    db.table("factor_panel", snapshot="factor-build-001")
+    .group_by("ts")
+    .agg(names=count_star(), combo_mean=col("z_combo").mean(), mom_z_std=col("z_momentum").std())
+    .sort("ts", descending=True)
+    .limit(3)
+    .to_pandas()
+).set_index("ts").round(3)
 
 # %% [markdown]
 # ## Takeaways
