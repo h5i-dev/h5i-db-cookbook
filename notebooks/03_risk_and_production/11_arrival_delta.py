@@ -1,5 +1,5 @@
 # %% [markdown]
-# # Leakage checks: which of last night's backtests actually held up?
+# # arrival-delta: which of last night's backtests actually held up?
 #
 # A research agent runs forty backtests overnight. So does a parameter sweep, or
 # a junior with a for-loop. In the morning there are forty Sharpes.
