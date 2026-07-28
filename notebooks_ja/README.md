@@ -74,7 +74,7 @@
 | [08 FX と暗号資産の24時間データ](03_risk_and_production/08_fx_crypto_24_7.ipynb) | セッションも切れ目もない世界でのバケット分けとローリング統計 |
 | [09 債券のカーブ](03_risk_and_production/09_fixed_income_curves.ipynb) | ポイントインタイムのイールドカーブ、キャリーとロールダウン、カーブ履歴 |
 | [10 性能チューニング](03_risk_and_production/10_performance_tuning.ipynb) | プルーニング、コンパクション、資源制限、バッチ化、そして速い理由 |
-| [11 リーク検査](03_risk_and_production/11_leakage_check.ipynb) | 後知恵に値段を付ける: スイープ全体への `arrival_delta` と、2つの誤解の形 |
+| [11 arrival-delta](03_risk_and_production/11_arrival_delta.ipynb) | 後知恵に値段を付ける: スイープ全体への `arrival_delta` と、2つの誤解の形 |
 
 ## 作り直し方
 

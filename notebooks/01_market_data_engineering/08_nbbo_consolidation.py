@@ -1,16 +1,24 @@
 # %% [markdown]
 # # NBBO consolidation: best bid/offer across fragmented venues
 #
-# US equities trade on a dozen-plus venues, each publishing its own top of
-# book. The consolidated best bid and offer (NBBO) - the number your
-# execution quality is measured against - has to be *derived*: at any instant,
-# take each venue's latest quote and cross-sectionally best them. That
-# "latest quote per venue at time t" is exactly an ASOF join, and h5i-db lets
-# us build a research-grade sampled NBBO in a few SQL statements: a time grid
-# ASOF-joined against per-venue quotes, then `max(bid)` / `min(ask)` per
-# instant. Along the way we measure which venue actually sets the inside, how
-# often the market locks or crosses, and how much tighter the consolidated
-# spread is than any single venue's.
+# US equities trade on a dozen or more venues, each publishing its own top of
+# book. The consolidated best bid and offer, the number your execution quality
+# is measured against, has to be *derived*: at any instant, take each venue's
+# latest quote and best them cross-sectionally.
+#
+# "Latest quote per venue at time t" is exactly an ASOF join. So a
+# research-grade sampled NBBO is a few SQL statements: a time grid ASOF-joined
+# against per-venue quotes, then `max(bid)` and `min(ask)` per instant.
+#
+# In this recipe we:
+#
+# 1. fan a consolidated quote stream out to three venues with distinct
+#    microstructure personalities,
+# 2. snapshot each venue's prevailing quote on a 10-second grid,
+# 3. consolidate and store the NBBO as its own table,
+# 4. measure which venue sets the inside, how often the market locks or
+#    crosses, and how much tighter the consolidated spread is than any single
+#    book.
 
 # %%
 import numpy as np
@@ -24,20 +32,40 @@ import cookbook_utils as cu
 db = h5i_db.Database(cu.fresh_db("mde_nbbo"), create=True)
 
 # %% [markdown]
-# ## 1. Synthesize a fragmented tape
+# ## 1. The data
 #
-# One day of consolidated-style AAPL quotes, fanned out to three venues with
-# distinct microstructure personalities: each venue re-quotes on the
-# consolidated updates but occasionally *drops* some (feed gaps - the source
-# of genuine staleness), adds its own gateway latency, and skews its price a
-# tick away from - or occasionally inside - the reference. That mix is what
-# makes one venue more competitive at the inside than another and lets brief
-# locked/crossed states appear. Fixed seeds throughout.
+# One session of consolidated-style AAPL quotes from `cu.make_quotes`, one row
+# per change in the best bid or offer.
+#
+# | column | type | meaning |
+# | --- | --- | --- |
+# | `ts` | `timestamp[us, tz=UTC]` | quote timestamp, ascending |
+# | `symbol` | `string` | ticker, `AAPL` only here |
+# | `bid`, `ask` | `float64` | best bid and offer |
+# | `bid_size`, `ask_size` | `int64` | displayed depth at each side |
 
 # %%
 quotes = cu.make_quotes(
     symbols=["AAPL"], days=1, quotes_per_day=2_600, seed=11, base_prices={"AAPL": 320.0}
 ).to_pandas()
+print(f"{len(quotes):,} rows x {quotes.shape[1]} columns")
+quotes.head()
+
+# %% [markdown]
+# We fan that single stream out to three venues, each with its own personality.
+# A venue re-quotes on the consolidated updates but occasionally *drops* some,
+# which is where genuine staleness comes from. It adds its own gateway latency,
+# and it skews its price a tick away from, or occasionally inside, the
+# reference.
+#
+# That mix is what makes one venue more competitive at the inside than another,
+# and what lets brief locked and crossed states appear. Seeds are fixed
+# throughout.
+#
+# The fanned-out table has one row per venue quote: `ts`, `venue`, `bid`, `ask`,
+# `bid_size`, `ask_size`.
+
+# %%
 rng = np.random.default_rng(5)
 TICK = 0.01
 
@@ -86,19 +114,20 @@ db.append("venue_quotes", pa.Table.from_pandas(venue_quotes, preserve_index=Fals
 # %% [markdown]
 # ## 2. A sampling grid, ASOF-joined per venue
 #
-# An event-accurate NBBO re-evaluates on *every* quote update; for research,
-# a sampled NBBO on a regular grid is the standard approximation (error
-# bounded by the sampling interval - consolidated updates arrive every ~9
-# seconds here, and we sample every 10). The grid is itself a tiny h5i-db
-# table: one row per (timestamp, venue), so a single
-# `asof_join(grid, venue_quotes, ..., 'venue')` snapshots each venue's
-# prevailing quote at each instant. The 60-second `tolerance` (raw
-# microseconds) declares a venue's quote stale - NULL - rather than letting a
-# dead book linger at the inside.
+# An event-accurate NBBO re-evaluates on *every* quote update. For research, a
+# sampled NBBO on a regular grid is the standard approximation, with error
+# bounded by the sampling interval. Consolidated updates arrive roughly every 9
+# seconds here and we sample every 10.
 #
-# One habit worth keeping in any ASOF pipeline: assert the join returned
-# exactly one row per grid row (a LEFT ASOF join is 1:1 with its left side),
-# so a sizing or key mistake fails loudly instead of skewing the book.
+# The grid is itself a tiny h5i-db table, one row per (timestamp, venue). So a
+# single `asof_join(grid, venue_quotes, ..., 'venue')` snapshots each venue's
+# prevailing quote at each instant. The 60-second `tolerance`, in raw
+# microseconds, declares a venue's quote stale and returns NULL, rather than
+# letting a dead book linger at the inside.
+#
+# One habit is worth keeping in any ASOF pipeline: assert the join returned
+# exactly one row per grid row. A LEFT ASOF join is 1:1 with its left side, so a
+# sizing or key mistake then fails loudly instead of skewing the book.
 
 # %%
 open_ts = venue_quotes["ts"].min().ceil("10s")
@@ -153,10 +182,11 @@ print(f"validated: {len(state):,} snapshot rows, XNAS column matches pandas merg
 # %% [markdown]
 # ## 3. Consolidate and store the NBBO
 #
-# Bettering across venues is now a plain GROUP BY per grid instant. We
-# materialize the result as its own table - downstream recipes (execution
-# benchmarks, effective-spread studies) read `nbbo_10s` without re-running
-# the consolidation.
+# Bettering across venues is now a plain GROUP BY per grid instant.
+#
+# We materialize the result as its own table. Downstream recipes, such as
+# execution benchmarks and effective-spread studies, read `nbbo_10s` without
+# re-running the consolidation.
 
 # %%
 nbbo = (
@@ -180,14 +210,16 @@ db.append("nbbo_10s", nbbo.cast(NBBO_SCHEMA), note="10s-sampled NBBO from 3 venu
 db.table("nbbo_10s").limit(5).to_pandas()
 
 # %% [markdown]
-# ## 4. Who sets the inside - and how often does it lock or cross?
+# ## 4. Who sets the inside, and how often does it lock or cross?
 #
-# Window functions over the per-venue snapshot answer the venue-share
-# question: at each instant, is this venue's bid equal to the consolidated
-# best? (Ties count for every venue at the inside.) The same snapshot flags
-# *locked* (NBB = NBO) and *crossed* (NBB > NBO) states - with independent
-# per-venue latencies and price skews, brief locks and crossings are a fact
-# of consolidated life, and any NBBO pipeline must decide how to treat them.
+# Window functions over the per-venue snapshot answer the venue-share question:
+# at each instant, is this venue's bid equal to the consolidated best? Ties
+# count for every venue at the inside.
+#
+# The same snapshot flags *locked* states, where NBB equals NBO, and *crossed*
+# states, where NBB exceeds NBO. With independent per-venue latencies and price
+# skews, brief locks and crossings are a fact of consolidated life, and any NBBO
+# pipeline has to decide how to treat them.
 
 # %%
 QUOTING = SNAPSHOT.filter(col("bid").is_not_null(), col("ask").is_not_null())
@@ -228,16 +260,17 @@ count_if = lambda flag: when(flag).then(lit(1)).otherwise(lit(0)).sum()
 # %% [markdown]
 # ## 5. The consolidation dividend: spread vs any single venue
 #
-# The point of consolidating: the inside spread is tighter than every
-# individual book, because the best bid and best ask usually live on
-# *different* venues. One UNION ALL puts the books side by side, and the
-# session plot shows the NBBO spread hugging the floor below each venue's
-# own spread.
+# Here is the point of consolidating. The inside spread is tighter than every
+# individual book, because the best bid and the best ask usually live on
+# *different* venues.
 #
-# There is no `UNION` verb, so this is the moment to walk through the door:
-# `.sql()` renders the per-venue half we already built, and the string
-# supplies the union. No f-string interpolation of the tolerance, no
-# hand-rewriting of a query that exists.
+# One UNION ALL puts the books side by side, and the session plot shows the NBBO
+# spread hugging the floor below each venue's own spread.
+#
+# There is no `UNION` verb, so this is the moment to walk through the door.
+# `.sql()` renders the per-venue half we already built, and the string supplies
+# the union. No f-string interpolation of the tolerance, and no hand-rewriting
+# of a query that already exists.
 
 # %%
 venue_spreads = QUOTING.group_by(col("venue").alias("book")).agg(
@@ -285,14 +318,14 @@ fig.tight_layout()
 # %% [markdown]
 # ## Takeaways
 #
-# - NBBO construction is "latest quote per venue, then best across venues" -
-#   which maps 1:1 onto `asof_join(grid, venue_quotes, ..., 'venue')` plus a
-#   GROUP BY. No per-venue loops, no manual state machines.
-# - The ASOF `tolerance` doubles as a staleness rule: a venue that stops
-#   quoting drops out of the consolidation instead of pinning a dead price at
-#   the inside.
-# - A sampled NBBO is an approximation - honest work states its grid (10s
-#   here) and remembers that locks/crosses between samples go unseen.
+# - NBBO construction is "latest quote per venue, then best across venues",
+#   which maps one-to-one onto `asof_join(grid, venue_quotes, ..., 'venue')`
+#   plus a GROUP BY. No per-venue loops, no manual state machines.
+# - The ASOF `tolerance` doubles as a staleness rule. A venue that stops quoting
+#   drops out of the consolidation instead of pinning a dead price at the
+#   inside.
+# - A sampled NBBO is an approximation. Honest work states its grid, 10s here,
+#   and remembers that locks and crosses between samples go unseen.
 # - Materializing `nbbo_10s` as a table makes the consolidation a build
 #   artifact: versioned, noted, and instantly queryable by every downstream
 #   execution study.

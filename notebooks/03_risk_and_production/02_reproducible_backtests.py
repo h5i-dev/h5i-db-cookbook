@@ -1,18 +1,25 @@
 # %% [markdown]
 # # Reproducible backtests: pin the data, not just the code
 #
-# Every quant team has lived this incident: a backtest from March cannot be
-# reproduced in July. The code is in git, the params are in the run log - but
-# the *data* moved underneath it. The vendor restated history (split fixes,
-# dividend corrections, survivorship patches) and the "same" backtest now
-# prints a different Sharpe. Git solved this for code; h5i-db solves it for
-# data: every write is an immutable version, and a named snapshot pins the
-# exact bytes a run consumed - at O(1) cost, because a snapshot is a manifest
-# pin, not a copy.
+# Every quant team has lived this incident. A backtest from March cannot be
+# reproduced in July. The code is in git and the params are in the run log, but
+# the *data* moved underneath it.
 #
-# This recipe demonstrates the failure concretely (restate → naive re-run →
-# different Sharpe), then the fix (snapshot-pinned re-run → **bit-identical**
-# results, asserted), and finishes with a minimal run-registry pattern.
+# The vendor restated history, whether split fixes, dividend corrections or
+# survivorship patches, and the "same" backtest now prints a different Sharpe.
+#
+# Git solved this for code. h5i-db solves it for data: every write is an
+# immutable version, and a named snapshot pins the exact bytes a run consumed.
+# The pin costs O(1), because a snapshot is a manifest reference rather than a
+# copy.
+#
+# In this recipe we:
+#
+# 1. demonstrate the failure concretely, restating data and re-running naively
+#    for a different Sharpe,
+# 2. apply the fix, re-running against a snapshot pin for **bit-identical**
+#    results, asserted,
+# 3. finish with a minimal run-registry pattern.
 
 # %%
 import hashlib
@@ -29,16 +36,30 @@ import cookbook_utils as cu
 db = h5i_db.Database(cu.fresh_db("prod_repro"), create=True)
 
 # %% [markdown]
-# ## 1. Load the price panel (data version 1)
+# ## 1. The data
 #
-# Twenty synthetic names, ~3 years of daily closes. With
-# `sort_key=["ts", "symbol"]` the input must be sorted by the full key -
-# a daily panel has 20 symbols per timestamp, so ts-only order is not enough.
+# `cu.make_daily_prices` gives a daily OHLCV panel: 20 synthetic names over
+# roughly 3 years, one row per symbol per session.
+#
+# | column | type | meaning |
+# | --- | --- | --- |
+# | `ts` | `timestamp[us, tz=UTC]` | session close, 20:00 UTC |
+# | `symbol` | `string` | ticker, `STK000` … `STK019` |
+# | `open`, `high`, `low`, `close` | `float64` | session prices |
+# | `volume` | `int64` | shares traded |
 
 # %%
 symbols = [f"STK{i:03d}" for i in range(20)]
 panel = cu.make_daily_prices(symbols=symbols, days=750)
+print(f"{panel.num_rows:,} rows x {panel.num_columns} columns")
+panel.to_pandas().head()
 
+# %% [markdown]
+# We keep `ts`, `symbol` and `close` as data version 1. With
+# `sort_key=["ts", "symbol"]` the input must be sorted by the full key. A daily
+# panel has 20 symbols per timestamp, so ts-only order is not enough.
+
+# %%
 schema = pa.schema(
     [
         pa.field("ts", pa.timestamp("us", tz="UTC"), nullable=False),
@@ -56,15 +77,17 @@ db.append(
 # %% [markdown]
 # ## 2. A backtest that takes its read point as a parameter
 #
-# The one design decision that makes reproducibility possible: the backtest
-# never hardcodes its read point. It takes one as an argument - the live
-# table, a pinned snapshot, a version number, an as-of timestamp - and
-# everything downstream is a pure function of that read point plus params.
+# One design decision makes reproducibility possible: the backtest never
+# hardcodes its read point.
+#
+# It takes one as an argument, whether the live table, a pinned snapshot, a
+# version number or an as-of timestamp. Everything downstream is then a pure
+# function of that read point plus params.
 # `db.table(name, snapshot=..., version=...)` makes the pin a keyword rather
 # than a relation name spliced into a query string.
 #
-# The strategy itself is deliberately plain (126-day momentum, monthly
-# rebalance, top-5 equal weight): the point is the plumbing, not the alpha.
+# The strategy itself is deliberately plain: 126-day momentum, monthly
+# rebalance, top-5 equal weight. The point is the plumbing, not the alpha.
 
 # %%
 def run_backtest(snapshot=None, version=None, lookback: int = 126, top_n: int = 5) -> dict:
@@ -98,8 +121,8 @@ def run_backtest(snapshot=None, version=None, lookback: int = 126, top_n: int = 
 # ## 3. Pin the read point, then run
 #
 # Before the research run, take a named snapshot. It freezes the manifest of
-# `prices` as of this instant - no data is copied, and no later write can
-# touch what the name resolves to.
+# `prices` as of this instant. No data is copied, and no later write can touch
+# what the name resolves to.
 
 # %%
 db.snapshot("bt-run-001", tables=["prices"], note="data pin for momentum study 001")
@@ -111,12 +134,14 @@ print(f"run 1  sharpe={run1['sharpe']:.6f}  curve sha256={run1['sha256'][:16]}..
 # ## 4. The vendor restates history
 #
 # Three months later the vendor ships a "corrected" file: revised
-# dividend-adjustment history for 10 of the 20 names - a haircut that decays
-# from 25% at the start of history to zero at the correction cutoff. That is
-# what real adjusted-price restatements look like, and it quietly changes
-# every pre-cutoff *return*, not just levels. We load it the honest way -
-# `write()` replaces the table contents as a *new version*, with a note;
-# version 1 is still there, byte for byte.
+# dividend-adjustment history for 10 of the 20 names. The haircut decays from
+# 25% at the start of history to zero at the correction cutoff.
+#
+# That is what real adjusted-price restatements look like, and it quietly
+# changes every pre-cutoff *return*, not just levels.
+#
+# We load it the honest way. `write()` replaces the table contents as a *new
+# version*, with a note, and version 1 is still there, byte for byte.
 
 # %%
 df = panel.select(["ts", "symbol", "close"]).to_pandas()
@@ -139,9 +164,9 @@ db.write("prices", restated, note="vendor restatement: dividend-adjustment fix, 
 # %% [markdown]
 # ## 5. The naive re-run diverges
 #
-# Re-running "the same backtest" against the live table reads the restated
-# data. Same code, same params, different Sharpe - this is the
-# irreproducibility incident, reduced to two lines.
+# Re-running "the same backtest" against the live table reads the restated data.
+# Same code, same params, different Sharpe. This is the irreproducibility
+# incident, reduced to two lines.
 
 # %%
 run2 = run_backtest()  # live head
@@ -167,11 +192,13 @@ ax.legend()
 fig.tight_layout()
 
 # %% [markdown]
-# ## 6. The pinned re-run is bit-identical - asserted
+# ## 6. The pinned re-run is bit-identical, asserted
 #
-# Now re-run against the snapshot taken before the restatement. Not "close",
-# not "within tolerance": the SHA-256 of the equity curve's raw float64 bytes
-# matches, because the inputs are the same immutable segments.
+# Now re-run against the snapshot taken before the restatement.
+#
+# The result is not "close" and not "within tolerance". The SHA-256 of the
+# equity curve's raw float64 bytes matches, because the inputs are the same
+# immutable segments.
 
 # %%
 run3 = run_backtest(snapshot="bt-run-001")
@@ -185,10 +212,11 @@ print("bit-identical: PASS")
 # %% [markdown]
 # ## 7. A minimal run registry
 #
-# Make the pin discoverable: a `runs` table records run id, read point,
-# params (JSON), Sharpe, and the result digest. Any run in the registry can
-# be reproduced exactly by anyone with the database directory - the snapshot
-# name in the row *is* the data dependency.
+# Make the pin discoverable. A `runs` table records the run id, read point,
+# params as JSON, Sharpe, and the result digest.
+#
+# Any run in the registry can be reproduced exactly by anyone with the database
+# directory, because the snapshot name in the row *is* the data dependency.
 
 # %%
 runs_schema = pa.schema(
@@ -235,18 +263,18 @@ for run_id, read_point, res in [
 # %% [markdown]
 # ## Takeaways
 #
-# - Backtests should take a **read point**, not a table name. Live head for
-#   exploration, `h5i('prices', '<snapshot>')` for anything you will ever
+# - Backtests should take a **read point**, not a table name. Use the live head
+#   for exploration and `h5i('prices', '<snapshot>')` for anything you will ever
 #   have to defend.
 # - A snapshot is a manifest pin: O(1) to create, zero data copied, immune to
-#   later restatements. Compare that to the folk remedy - copying CSV extracts
-#   per run - which costs storage per run, drifts from the source, and cannot
-#   be queried with SQL.
-# - Restatements stay loadable the honest way: `write()` with a note creates
-#   a new version; the old one remains addressable forever. Data lineage is
-#   `versions()`, not tribal memory.
-# - Bit-identical means assertable: hash the result bytes and let CI verify
-#   that registered runs still reproduce.
+#   later restatements. Compare that to the folk remedy of copying CSV extracts
+#   per run, which costs storage per run, drifts from the source, and cannot be
+#   queried with SQL.
+# - Restatements stay loadable the honest way. `write()` with a note creates a
+#   new version, and the old one remains addressable forever. Data lineage lives
+#   in `versions()` rather than tribal memory.
+# - Bit-identical means assertable. Hash the result bytes and let CI verify that
+#   registered runs still reproduce.
 
 # %%
 db.close()

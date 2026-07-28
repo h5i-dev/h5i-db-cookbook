@@ -2,20 +2,24 @@
 # # Previewable mutations: fix bad ticks without fearing the delete key
 #
 # Deleting or rewriting rows in a shared tick store is the scariest routine
-# operation on a quant desk - a fat-fingered `DELETE WHERE` has ruined more
-# research datasets than any hardware failure. h5i-db's answer is the
-# **plan/apply flow**: a mutation is first *staged* as a plan with a machine
-# summary and before/after row samples, reviewed, and only then applied - as
-# a new version, with the old one intact. In this recipe we:
+# operation on a quant desk. A fat-fingered `DELETE WHERE` has ruined more
+# research datasets than any hardware failure.
 #
-# 1. inject two classic tick-data pathologies (a feed glitch and a 10x
-#    scaling bug) and find them with SQL,
-# 2. stage a delete, catch ourselves over-deleting in the preview, discard,
-#    re-plan narrower, apply,
+# h5i-db's answer is the **plan/apply flow**. A mutation is first staged as a
+# plan carrying a machine-readable summary and before/after row samples. You
+# review it, and only then apply it, as a new version with the old one intact.
+#
+# In this recipe we:
+#
+# 1. inject two classic tick-data pathologies, a feed glitch and a 10x scaling
+#    bug, and find them with SQL,
+# 2. stage a delete, catch ourselves over-deleting in the preview, discard, and
+#    re-plan narrower before applying,
 # 3. stage a `replace_range` that repairs prices in place,
-# 4. lock the database down with a mutation policy so direct destructive
-#    writes raise `PolicyError` - the safety story for shared and
-#    agent-operated databases.
+# 4. lock the database down with a mutation policy, so direct destructive writes
+#    raise `PolicyError`.
+#
+# That last step is the safety story for shared and agent-operated databases.
 
 # %%
 import pandas as pd
@@ -28,20 +32,38 @@ import cookbook_utils as cu
 db = h5i_db.Database(cu.fresh_db("00_mutations"), create=True)
 
 # %% [markdown]
-# ## 1. Two days of ticks, two injected pathologies
+# ## 1. The data
 #
-# We corrupt the synthetic feed the way real feeds break:
+# Two sessions of ticks from `cu.make_trades`, one row per print.
 #
-# - **Feed glitch**: for ten seconds on day 1 (15:00:00-15:00:10 UTC) every
-#   print, all symbols, comes in at 10x - a decimal-shift burst.
-# - **Scaling bug**: for ten minutes on day 2 (14:00-14:10 UTC) one symbol's
-#   (MSFT) prices are all 10x - a per-symbol multiplier bug in a handler.
-#
-# The glitch rows are garbage (delete them); the scaling-bug rows are real
-# trades with a recoverable price (repair them).
+# | column | type | meaning |
+# | --- | --- | --- |
+# | `ts` | `timestamp[us, tz=UTC]` | trade timestamp, ascending |
+# | `symbol` | `string` | ticker |
+# | `price` | `float64` | trade price |
+# | `size` | `int64` | shares traded |
+# | `exchange` | `string` | reporting venue |
+# | `side` | `string` | `B` buyer-initiated, `S` seller-initiated |
 
 # %%
 trades = cu.make_trades(symbols=["AAPL", "MSFT", "NVDA"], days=2, trades_per_day=20_000, seed=7)
+print(f"{trades.num_rows:,} rows x {trades.num_columns} columns")
+trades.to_pandas().head()
+
+# %% [markdown]
+# ## 2. Inject two pathologies
+#
+# We corrupt that clean feed the way real feeds break.
+#
+# - **Feed glitch.** For ten seconds on day 1 (15:00:00–15:00:10 UTC) every
+#   print, in every symbol, arrives at 10x. A decimal-shift burst.
+# - **Scaling bug.** For ten minutes on day 2 (14:00–14:10 UTC) one symbol's
+#   prices are all 10x. A per-symbol multiplier bug in a feed handler.
+#
+# The two need different treatment. Glitch rows are garbage, so delete them.
+# Scaling-bug rows are real trades with a recoverable price, so repair them.
+
+# %%
 df = trades.to_pandas()
 
 glitch = (df["ts"] >= "2026-06-01 15:00:00+00:00") & (df["ts"] < "2026-06-01 15:00:10+00:00")
@@ -58,17 +80,17 @@ db.append("trades", corrupted, note="raw feed capture, days 1-2")
 print(f"{glitch.sum()} glitch prints, {scaling.sum()} scaled prints, {len(df):,} rows total")
 
 # %% [markdown]
-# ## 2. Find the damage
+# ## 3. Find the damage
 #
-# A robust screen: compare every print to its symbol's daily median
-# (`approx_percentile_cont`). The corrupt rows sit at ~10x their median; the
-# median itself barely moves because the corrupt fraction is small. This is
-# why medians, not means, anchor outlier screens.
+# A robust screen compares every print to its symbol's daily median, via
+# `approx_percentile_cont`. The corrupt rows sit at roughly 10x their median,
+# while the median itself barely moves because the corrupt fraction is small.
+# This is why medians, not means, anchor outlier screens.
 #
-# We will run this detector twice - now, and again after the repair - so it
-# is written once as a function of the read point. The `trades` frame feeds
-# both sides of its own join: once grouped into daily medians, once as the
-# row-level left side.
+# We run this detector twice, now and again after the repair, so it is written
+# once as a function of the read point. The `trades` frame feeds both sides of
+# its own join: once grouped into daily medians, once as the row-level left
+# side.
 
 # %%
 DAY = time_bucket("1d", col("ts"))
@@ -98,10 +120,12 @@ flagged.groupby([flagged["ts"].dt.floor("1D").rename("day"), "symbol"]).size()
 
 # %% [markdown]
 # Two clusters, exactly as injected: an all-symbol burst on day 1 and an
-# MSFT-only stretch on day 2. Derive the time bounds of each from the
-# flagged rows. **Mutation-plan ranges are raw int64 microseconds** (the
-# unit of the `ts` column) and half-open `[start, end)` - so add 1µs past
-# the last bad print.
+# MSFT-only stretch on day 2. Now derive the time bounds of each from the
+# flagged rows.
+#
+# **Mutation-plan ranges are raw int64 microseconds**, matching the unit of the
+# `ts` column, and they are half-open `[start, end)`. So add 1µs past the last
+# bad print.
 
 # %%
 burst = flagged[flagged["ts"] < "2026-06-02"]
@@ -115,16 +139,16 @@ print("burst window:", burst["ts"].min(), "->", burst["ts"].max())
 print("bug   window:", bug["ts"].min(), "->", bug["ts"].max())
 
 # %% [markdown]
-# ## 3. Stage a delete - and catch the over-delete before it happens
+# ## 4. Stage a delete, and catch the over-delete before it happens
 #
-# First instinct: "nuke the whole five minutes around the glitch, to be
-# safe." Stage it and look at the plan before believing it. A plan is not a
-# commit: nothing has changed in the table yet.
+# First instinct: nuke the whole five minutes around the glitch, to be safe.
+# Stage it and look at the plan before believing it. A plan is not a commit, so
+# nothing in the table has changed yet.
 #
-# One crucial property of range mutations: **the range is on time only** -
-# it does not filter by symbol. A "safe, wide" window silently takes healthy
-# AAPL and NVDA prints with it. The plan summary makes that visible *before*
-# any damage.
+# One property of range mutations matters more than any other here. **The range
+# is on time only** and does not filter by symbol. A "safe, wide" window
+# silently takes healthy AAPL and NVDA prints with it. The plan summary makes
+# that visible before any damage is done.
 
 # %%
 sloppy = db.plan_delete_range(
@@ -136,10 +160,11 @@ sloppy = db.plan_delete_range(
 sloppy.summary
 
 # %% [markdown]
-# `rows_affected` is ~25x the number of bad prints - the wide window would
-# destroy hundreds of good trades. `before_sample` shows the doomed rows:
-# healthy \\$200-ish prints mixed in with the 10x garbage. Discard and
-# re-plan on the tight bounds the detector gave us.
+# `rows_affected` is about 25x the number of bad prints, so the wide window
+# would destroy hundreds of good trades. `before_sample` shows the doomed rows:
+# healthy \\$200-ish prints mixed in with the 10x garbage.
+#
+# Discard, then re-plan on the tight bounds the detector gave us.
 
 # %%
 sloppy.before_sample.to_pandas().head(6)
@@ -153,18 +178,19 @@ commit = tight.apply()
 print("applied as version", commit["sequence"], "op:", commit["op"])
 
 # %% [markdown]
-# `apply()` re-checks the table head first: if anyone committed after the
-# plan was staged, it raises `ConflictError` instead of publishing a
-# mutation computed against a stale base - the same optimistic concurrency
-# as `append(expected_version=...)`.
+# `apply()` re-checks the table head first. If anyone committed after the plan
+# was staged, it raises `ConflictError` rather than publishing a mutation
+# computed against a stale base. That is the same optimistic concurrency as
+# `append(expected_version=...)`.
 #
-# ## 4. Repair in place with `plan_replace_range`
+# ## 5. Repair in place with `plan_replace_range`
 #
-# The MSFT scaling bug is different: the trades are real, the prices are
-# recoverable (`/10`). `plan_replace_range(start, end, data)` swaps
-# *everything* in the window for the data you provide - so the replacement
-# must contain the window's AAPL and NVDA rows unchanged, plus the repaired
-# MSFT rows.
+# The MSFT scaling bug needs the other treatment. The trades are real and the
+# prices are recoverable by dividing by 10.
+#
+# `plan_replace_range(start, end, data)` swaps *everything* in the window for
+# the data you provide. The replacement must therefore contain the window's AAPL
+# and NVDA rows unchanged, alongside the repaired MSFT rows.
 
 # %%
 win = df[(df["ts"] >= pd.Timestamp(bug_lo, unit="us", tz="UTC"))
@@ -186,9 +212,9 @@ assert len(outliers().collect()) == 0
 print("detector re-run: 0 outliers remaining")
 
 # %% [markdown]
-# Every correction is a version. The uncorrected capture is one integer
-# away - so "did the cleaning change my backtest?" is a SQL join, not an
-# archaeology project (recipe 05).
+# Every correction is a version. The uncorrected capture stays one integer away,
+# so "did the cleaning change my backtest?" is a SQL join rather than an
+# archaeology project. Recipe 05 covers that comparison.
 
 # %%
 pd.DataFrame(db.versions("trades"))[["sequence", "op", "rows", "note"]]
@@ -223,12 +249,14 @@ ax.legend()
 fig.tight_layout()
 
 # %% [markdown]
-# ## 5. Mutation policy: make the safe path the only path
+# ## 6. Mutation policy: make the safe path the only path
 #
-# On a shared database - or one an automated agent writes to - you want
-# direct destructive operations off by default. `set_policy` flips boolean
-# gates per operation class; a gated direct call raises `PolicyError`
-# **before touching anything**. The plan/apply flow stays available: that
+# On a shared database, or one an automated agent writes to, you want direct
+# destructive operations off by default. `set_policy` flips boolean gates per
+# operation class, and a gated direct call raises `PolicyError` **before
+# touching anything**.
+#
+# The plan/apply flow stays available under any policy. That is deliberate: it
 # *is* the sanctioned route, because it forces a previewable, reviewable
 # artifact between intent and mutation.
 
@@ -245,9 +273,9 @@ except h5i_db.PolicyError as e:
 
 # %% [markdown]
 # Planning is still allowed under the restrictive policy. Pending plans are
-# first-class objects: `list_plans` shows what is staged and by which
-# summary; plans expire after a 7-day TTL, and their staged segments are
-# protected from `vacuum` until they are applied, discarded, or expire.
+# first-class objects: `list_plans` shows what is staged and with which summary.
+# Plans expire after a 7-day TTL, and their staged segments are protected from
+# `vacuum` until they are applied, discarded or expired.
 
 # %%
 pending = db.plan_delete_range(
@@ -268,19 +296,19 @@ db.set_policy(direct_write=True, direct_delete=True, direct_restore=True)
 # %% [markdown]
 # ## Takeaways
 #
-# - **Plan, look, then apply.** `plan_delete_range` / `plan_replace_range`
-#   stage a mutation with a row-count summary and before/after samples; the
-#   over-wide delete announced itself in `rows_affected` before it could do
-#   any harm.
-# - Mutation ranges are **raw int64 microseconds, half-open, time-only** -
-#   they never filter by symbol, so a replacement must carry the innocent
-#   rows of the window through unchanged.
-# - `apply()` is conflict-checked against the table head; every applied plan
-#   is a new version with a note, and the uncorrected data stays one
+# - **Plan, look, then apply.** `plan_delete_range` and `plan_replace_range`
+#   stage a mutation with a row-count summary and before/after samples. The
+#   over-wide delete announced itself in `rows_affected` before it could do any
+#   harm.
+# - Mutation ranges are raw int64 microseconds, half-open, and time-only. They
+#   never filter by symbol, so a replacement must carry the innocent rows of the
+#   window through unchanged.
+# - `apply()` is conflict-checked against the table head. Every applied plan is
+#   a new version with a note, and the uncorrected data stays one
 #   `h5i('trades', v)` away.
-# - `set_policy(direct_write=False, ...)` turns "please be careful" into
-#   `PolicyError` - the right default for shared stores and for anything an
-#   LLM agent is allowed to touch.
+# - `set_policy(direct_write=False, ...)` turns "please be careful" into a
+#   `PolicyError`. That is the right default for shared stores, and for anything
+#   an LLM agent is allowed to touch.
 
 # %%
 db.close()

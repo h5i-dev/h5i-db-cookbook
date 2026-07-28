@@ -2,15 +2,21 @@
 # # VWAP, TWAP and execution benchmarks
 #
 # Execution desks live and die by benchmark arithmetic: interval VWAP, TWAP,
-# arrival price, slippage in basis points. All of it is bucketed, weighted
-# aggregation over a trade tape plus one point-in-time lookup against the
-# quote stream - which is exactly the shape of query h5i-db's `time_bucket`,
-# `vwap()` (aggregate *and* window function) and `asof_join` are built for.
+# arrival price, slippage in basis points.
 #
-# We compute full-day and 30-minute interval VWAPs, contrast them with TWAP
-# where volume skew makes them diverge, then benchmark a simulated parent
-# order - 50k shares of AAPL worked over an hour - against interval VWAP
-# and arrival mid.
+# All of it is bucketed, weighted aggregation over a trade tape, plus one
+# point-in-time lookup against the quote stream. That is exactly the shape of
+# query `time_bucket`, `vwap()` and `asof_join` are built for. `vwap()` is both
+# an aggregate and a window function, which covers interval and running
+# benchmarks with one operator.
+#
+# In this recipe we:
+#
+# 1. derive a microstructure-consistent tape from a quote stream,
+# 2. compute full-day and 30-minute interval VWAPs,
+# 3. contrast them with TWAP, where volume skew makes the two diverge,
+# 4. benchmark a simulated parent order, 50k shares of AAPL worked over an
+#    hour, against interval VWAP and arrival mid.
 
 # %%
 import numpy as np
@@ -25,18 +31,37 @@ import cookbook_utils as cu
 db = h5i_db.Database(cu.fresh_db("mde_vwap"), create=True)
 
 # %% [markdown]
-# ## 1. A microstructure-consistent tape
+# ## 1. The data
 #
-# Benchmarking fills against quotes only makes sense if trades and quotes
-# describe the *same* market, so we derive the printed tape from the quote
-# stream: each trade lifts the offer or hits the bid of the prevailing quote
-# (10% execute at mid), with a small exchange latency. (The cookbook's
-# independent trade/quote generators share only the opening price - fine for
-# bar recipes, useless for quote-relative benchmarks.)
+# We start from quotes. `cu.make_quotes` gives top-of-book snapshots: one row
+# every time the best bid or offer changes.
+#
+# | column | type | meaning |
+# | --- | --- | --- |
+# | `ts` | `timestamp[us, tz=UTC]` | quote timestamp, ascending |
+# | `symbol` | `string` | ticker |
+# | `bid`, `ask` | `float64` | best bid and offer |
+# | `bid_size`, `ask_size` | `int64` | displayed depth at each side |
 
 # %%
 quotes = cu.make_quotes(symbols=["AAPL", "MSFT", "NVDA"], days=3, seed=11)
+print(f"quotes: {quotes.num_rows:,} rows x {quotes.num_columns} columns")
+quotes.to_pandas().head()
 
+# %% [markdown]
+# Benchmarking fills against quotes only means something if trades and quotes
+# describe the *same* market. So we derive the printed tape from the quote
+# stream rather than generating it independently. Each trade lifts the offer or
+# hits the bid of the prevailing quote, 10% execute at the mid, and every print
+# carries a small exchange latency.
+#
+# The cookbook's stock trade and quote generators share only an opening price.
+# That is fine for bar recipes and useless for quote-relative benchmarks.
+#
+# The derived tape has one row per print: `ts`, `symbol`, `price`, `size` and
+# `side` (`B` for a buyer who paid the offer, `S` for a seller who hit the bid).
+
+# %%
 qp = quotes.to_pandas()
 rng = np.random.default_rng(17)
 is_trade = rng.random(len(qp)) < 0.35
@@ -52,6 +77,10 @@ tr["side"] = np.where(buy, "B", "S")
 tr["ts"] = (tr["ts"] + pd.to_timedelta(rng.uniform(0.2, 5.0, n), unit="ms")).dt.floor("us")
 tr = tr.sort_values(["ts", "symbol"])[["ts", "symbol", "price", "size", "side"]]
 
+print(f"{len(tr):,} trades derived from {len(qp):,} quotes")
+tr.head()
+
+# %%
 ts_field = pa.field("ts", pa.timestamp("us", tz="UTC"), nullable=False)
 trade_schema = pa.schema(
     [ts_field, pa.field("symbol", pa.string()), pa.field("price", pa.float64()),
@@ -68,15 +97,17 @@ quote_schema = pa.schema(
 db.create_table("quotes", quote_schema, time_column="ts", sort_key=["ts", "symbol"])
 db.append("quotes", quotes.cast(quote_schema))
 
-print(f"{len(tr):,} trades derived from {len(qp):,} quotes")
+db.tables()
 
 # %% [markdown]
 # ## 2. Full-day and interval VWAP
 #
-# `vwap(price, size)` is a native aggregate, so day VWAP is a one-liner -
-# with `time_bucket('1d', ts, 'America/New_York')` cutting sessions at New
-# York midnight so the numbers stay DST-safe. The same statement at
-# `'30m'` gives the interval VWAPs an execution scheduler would target.
+# `vwap(price, size)` is a native aggregate, so day VWAP is a one-liner. The
+# `time_bucket('1d', ts, 'America/New_York')` argument cuts sessions at New York
+# midnight, which keeps the numbers DST-safe.
+#
+# Change the width to `'30m'` and the same statement gives the interval VWAPs an
+# execution scheduler would target.
 
 # %%
 SESSION = time_bucket("1d", col("ts"), timezone="America/New_York")
@@ -103,13 +134,14 @@ ivwap.head(6)
 # %% [markdown]
 # ## 3. TWAP vs VWAP
 #
-# TWAP weights every minute equally; VWAP weights minutes by volume. With a
-# U-shaped volume profile, VWAP concentrates weight at the open and close -
-# so whenever the price near the extremes differs from the middle of the
-# day, the two benchmarks part ways. We build TWAP from 1-minute closes
-# (an intermediate frame, `.last("ts")` for the close) and measure the
-# divergence per session in basis points. Aggregating a frame that is
-# already an aggregate just nests it - the CTE writes itself.
+# TWAP weights every minute equally. VWAP weights minutes by volume. With a
+# U-shaped volume profile, VWAP concentrates its weight at the open and close,
+# so the two benchmarks part ways whenever the price near the extremes differs
+# from the middle of the day.
+#
+# We build TWAP from 1-minute closes and measure the divergence per session in
+# basis points. Aggregating a frame that is already an aggregate just nests it,
+# so the CTE writes itself.
 
 # %%
 bars_1m = (
@@ -133,10 +165,12 @@ bench["vwap_minus_twap_bps"] = (bench["day_vwap"] / bench["twap"] - 1) * 1e4
 bench[["session", "symbol", "day_vwap", "twap", "vwap_minus_twap_bps"]]
 
 # %% [markdown]
-# A few bps either way, entirely driven by whether the heavy open/close
-# volume printed above or below the day's average price. The running view
-# makes the mechanics visible - `vwap()` also works as a *window* function,
-# so cumulative VWAP needs no manual `sum(pv)/sum(v)` bookkeeping:
+# A few bps either way, driven entirely by whether the heavy open and close
+# volume printed above or below the day's average price.
+#
+# The running view makes the mechanics visible. `vwap()` also works as a
+# *window* function, so cumulative VWAP needs no manual `sum(pv)/sum(v)`
+# bookkeeping.
 
 # %%
 def aapl_window(t_lo: str, t_hi: str):
@@ -172,12 +206,13 @@ fig.tight_layout()
 # %% [markdown]
 # ## 4. Benchmarking a parent order
 #
-# The desk buys 50,000 AAPL between 14:00 and 15:00 UTC (10:00–11:00 New
-# York) on 2026-06-02, working the order POV-style at ~constant participation
-# in the aggressive (offer-lifting) flow. We simulate the fills from the
-# tape, store them as a `fills` table, and mark the arrival price the
-# standard way: the prevailing quote mid at order receipt, fetched with a
-# one-row `asof_join`.
+# The desk buys 50,000 AAPL between 14:00 and 15:00 UTC (10:00–11:00 New York)
+# on 2026-06-02. The order is worked POV-style, at roughly constant
+# participation in the aggressive offer-lifting flow.
+#
+# We simulate the fills from the tape and store them as a `fills` table. Arrival
+# price gets marked the standard way: the prevailing quote mid at order receipt,
+# fetched with a one-row `asof_join`.
 
 # %%
 t0, t1 = pd.Timestamp("2026-06-02 14:00", tz="UTC"), pd.Timestamp("2026-06-02 15:00", tz="UTC")
@@ -200,12 +235,12 @@ print(f"{len(fills):,} fills, {fills['size'].sum():,} shares, "
       f"~{pov:.0%} of aggressive buy volume")
 
 # %% [markdown]
-# `asof_join` takes stored table names, so we first snapshot the quote
-# window around order receipt into its own small table - desks persist
-# exactly such windows for later TCA review - and join the one-row parent
-# order against it. As a cross-check, we confirm the asof lookup agrees
-# with an explicit "latest quote at or before 14:00" point query on the
-# full quote table.
+# `asof_join` takes stored table names, so we first snapshot the quote window
+# around order receipt into its own small table. Desks persist exactly such
+# windows for later TCA review. Then the one-row parent order joins against it.
+#
+# As a cross-check, we confirm the asof lookup agrees with an explicit "latest
+# quote at or before 14:00" point query on the full quote table.
 
 # %%
 qwin = (
@@ -248,9 +283,10 @@ assert np.isclose(arrival["arrival_mid"][0], direct)
 arrival
 
 # %% [markdown]
-# `asof_join` picked the last quote at or before 14:00:00 (`quote_ts` shows
-# how stale it was - colliding right-side columns get a `_right` suffix).
-# Now the scorecard: fill VWAP vs interval VWAP and vs arrival.
+# `asof_join` picked the last quote at or before 14:00:00. `quote_ts` shows how
+# stale that quote was, and colliding right-side columns get a `_right` suffix.
+#
+# Now the scorecard: fill VWAP against interval VWAP, and against arrival.
 
 # %%
 VWAP = vwap(col("price"), col("size"))
@@ -283,14 +319,14 @@ ax.legend(loc="best", fontsize=8)
 fig.tight_layout()
 
 # %% [markdown]
-# Paying the offer costs roughly the half-spread versus interval VWAP -
-# exactly what a POV schedule of marketable orders should show - while
-# slippage vs arrival additionally carries the price drift over the hour
-# (implementation shortfall).
+# Paying the offer costs roughly the half-spread against interval VWAP, which is
+# exactly what a POV schedule of marketable orders should show. Slippage against
+# arrival additionally carries the price drift over the hour, the quantity known
+# as implementation shortfall.
 #
 # ## 5. `vwap` and kdb-style `wavg` are the same statistic
 #
-# Migrating from q? `w wavg x` is weight-first; h5i-db ships both spellings.
+# Migrating from q? `w wavg x` is weight-first. h5i-db ships both spellings.
 
 # %%
 eq = db.table("fills").select(
@@ -303,17 +339,18 @@ eq
 # %% [markdown]
 # ## Takeaways
 #
-# - `vwap(price, size)` works as an aggregate (day/interval VWAP with
-#   `time_bucket`) and as a window function (running VWAP) - no manual
-#   `sum(pv)/sum(v)` scaffolding; `wavg(w, x)` is the kdb-style spelling.
-# - TWAP from 1-minute closes is a CTE away; VWAP-TWAP divergence falls out
-#   in bps per session, driven by U-shaped volume.
-# - Arrival price is a one-row `asof_join` against a stored quote window -
-#   and it is cheap to cross-check against an explicit point query, a habit
+# - `vwap(price, size)` works as an aggregate, giving day and interval VWAP with
+#   `time_bucket`, and as a window function, giving running VWAP. No manual
+#   `sum(pv)/sum(v)` scaffolding either way. `wavg(w, x)` is the kdb-style
+#   spelling of the same statistic.
+# - TWAP from 1-minute closes is a CTE away, and the VWAP-TWAP divergence falls
+#   out in bps per session, driven by U-shaped volume.
+# - Arrival price is a one-row `asof_join` against a stored quote window. It is
+#   cheap to cross-check against an explicit point query, and that is a habit
 #   worth keeping for any benchmark that moves money.
-# - Benchmarks are only meaningful on a consistent tape: derive (or verify)
-#   your trades against the quote stream before trusting quote-relative
-#   numbers.
+# - Benchmarks are only meaningful on a consistent tape. Derive your trades from
+#   the quote stream, or verify them against it, before trusting any
+#   quote-relative number.
 
 # %%
 db.close()

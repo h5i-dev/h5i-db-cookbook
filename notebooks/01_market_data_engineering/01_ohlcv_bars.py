@@ -1,20 +1,24 @@
 # %% [markdown]
 # # OHLCV bars from tick data
 #
-# Bar construction is the first transformation every tick dataset goes
-# through, and it is where subtle bugs are born: wrong bucket boundaries,
-# `last` picked by file order instead of event time, sessions split across
-# UTC midnights. h5i-db makes the whole pipeline one SQL statement -
-# `time_bucket` + ordered `first_value`/`last_value` + `vwap` stream over
-# time-sorted Parquet segments without a sort step - and the resulting bar
-# table is itself a versioned table you can persist, audit and time-travel.
+# Rolling ticks into bars is where most tick pipelines pick up their first bug:
+# a bucket boundary off by one, a close taken in file order instead of event
+# order, a session cut in half at UTC midnight.
+#
+# In h5i-db the rollup is a single aggregation. `time_bucket` defines the grid,
+# ordered `first_value`/`last_value` give open and close, and `vwap` is a native
+# aggregate. Because segments are stored time-sorted, the query streams instead
+# of sorting.
+#
+# The result is an ordinary table, so you can persist it, audit it and
+# time-travel it like any other.
 #
 # In this recipe we:
 #
 # 1. roll a week of ticks into 1m/5m/1h bars,
-# 2. build session-aligned daily bars (timezone- and DST-aware),
+# 2. build session-aligned daily bars that survive timezones and DST,
 # 3. persist the 5m bars as a versioned `bars_5m` table,
-# 4. validate the SQL bars bit-for-bit against a pandas reference.
+# 4. validate the SQL bars against a pandas reference, field by field.
 
 # %%
 import numpy as np
@@ -29,18 +33,34 @@ import cookbook_utils as cu
 db = h5i_db.Database(cu.fresh_db("mde_ohlcv"), create=True)
 
 # %% [markdown]
-# ## 1. Load a week of ticks
+# ## 1. The data
 #
-# ~450k synthetic trades: 3 symbols, 5 sessions, U-shaped intraday activity
-# and bid-ask bounce. The table is declared with `time_column="ts"` and a
-# secondary sort on `symbol` - that physical ordering is what lets the bar
-# queries below stream instead of sort.
+# A week of ticks from `cu.make_trades`: 3 symbols across 5 sessions, one row
+# per print. Arrival times are U-shaped within each session and prices bounce
+# between bid and ask.
+#
+# | column | type | meaning |
+# | --- | --- | --- |
+# | `ts` | `timestamp[us, tz=UTC]` | trade timestamp, ascending |
+# | `symbol` | `string` | ticker |
+# | `price` | `float64` | trade price |
+# | `size` | `int64` | shares traded |
+# | `exchange` | `string` | reporting venue |
+# | `side` | `string` | `B` buyer-initiated, `S` seller-initiated |
 
 # %%
 trades = cu.make_trades(
     symbols=["AAPL", "MSFT", "NVDA"], days=5, trades_per_day=30_000, seed=7
 )
+print(f"{trades.num_rows:,} rows x {trades.num_columns} columns")
+trades.to_pandas().head()
 
+# %% [markdown]
+# The table is declared with `time_column="ts"` and a secondary sort on
+# `symbol`. That physical ordering is what lets the bar queries below stream
+# rather than sort.
+
+# %%
 schema = pa.schema(
     [
         pa.field("ts", pa.timestamp("us", tz="UTC"), nullable=False),
@@ -57,21 +77,22 @@ db.append("trades", trades, note="week of ticks")["rows_total"]
 # %% [markdown]
 # ## 2. Bars at any width
 #
-# The bar rollup is one function of the width, so we build it once and call
-# it - the payoff of a query that is a Python value rather than a string.
-# The idioms that matter:
+# The bar rollup is one function of the width, so we build it once and call it.
+# That is the payoff of a query that is a Python value rather than a string.
 #
-# - `time_bucket('<width>', ts)` floors each tick to its bucket - widths like
-#   `'1m'`, `'5m'`, `'1h'` (also `'1d'`, `'1mo'`, ...);
-# - `.first("ts")` / `.last("ts")` are `first_value(price ORDER BY ts)` and
-#   its mirror: open and close by *event time*, not by accident of row
-#   order - no self-joins;
+# Three idioms carry the whole query:
+#
+# - `time_bucket('<width>', ts)` floors each tick to its bucket. Widths look
+#   like `'1m'`, `'5m'`, `'1h'`, and also `'1d'`, `'1mo'` and up;
+# - `.first("ts")` and `.last("ts")` are `first_value(price ORDER BY ts)` and
+#   its mirror. Open and close come from *event time*, not from an accident of
+#   row order, and no self-join is needed;
 # - `vwap(price, size)` is a native aggregate.
 #
-# One naming rule to internalize: never alias a computed group key to the
-# name of a column that already exists. `GROUP BY "ts"` would bind to the raw
-# `ts` column rather than the bucket - one group per tick, silently. Bucket
-# to `bar`, then rename in a following `select`, which lands a level down
+# One naming rule is worth internalizing: never alias a computed group key to
+# the name of a column that already exists. `GROUP BY "ts"` would bind to the
+# raw `ts` column rather than the bucket, giving one group per tick, silently.
+# Bucket to `bar`, then rename in a following `select`, which lands a level down
 # where the name is free.
 
 # %%
@@ -99,9 +120,9 @@ bars_5m = bars("5m").sort(["ts", "symbol"]).to_pandas()
 bars_5m.head(6)
 
 # %% [markdown]
-# Counting the bars at each width just extends the same frame - the
-# aggregation closes a level, so a `count(*)` on top of it nests as a
-# subquery without any string surgery:
+# Counting the bars at each width just extends the same frame. The aggregation
+# closes a level, so a `count(*)` on top of it nests as a subquery without any
+# string surgery:
 
 # %%
 for width in ("1m", "5m", "1h"):
@@ -111,12 +132,13 @@ for width in ("1m", "5m", "1h"):
 # %% [markdown]
 # ## 3. Session-aligned daily bars
 #
-# `time_bucket` takes an optional third argument: an IANA timezone or an
-# origin timestamp. `time_bucket('1d', ts, 'America/New_York')` cuts days at
-# New York midnight (04:00/05:00 UTC depending on DST) instead of UTC
-# midnight - the boundaries below differ by exactly the EDT offset. For a
-# 13:30–20:00 UTC cash session both cuts happen to *group* ticks the same
-# way, but the NY variant stays correct across DST transitions where a fixed
+# `time_bucket` takes an optional third argument: an IANA timezone, or an origin
+# timestamp. `time_bucket('1d', ts, 'America/New_York')` cuts days at New York
+# midnight, which is 04:00 or 05:00 UTC depending on DST, instead of UTC
+# midnight. The boundaries below differ by exactly the EDT offset.
+#
+# For a 13:30–20:00 UTC cash session both cuts happen to *group* ticks the same
+# way. The New York variant stays correct across DST transitions, where a fixed
 # UTC offset would drift by an hour.
 
 # %%
@@ -133,12 +155,15 @@ for width in ("1m", "5m", "1h"):
 
 # %% [markdown]
 # Where the bucket choice changes the *numbers*, not just the labels, is any
-# session that crosses UTC midnight - overnight futures, FX, crypto. A
-# Globex-style session opens 18:00 New York (22:00 UTC), so a naive UTC day
-# slices every session in two, and so does a New-York-midnight day. The fix
-# is the origin form: `time_bucket('1d', ts, '<session open>')` aligns
-# buckets to the trading session itself. We synthesize three overnight
-# sessions to make the difference concrete.
+# session that crosses UTC midnight: overnight futures, FX, crypto.
+#
+# A Globex-style session opens at 18:00 New York, which is 22:00 UTC. A naive
+# UTC day slices every session in two, and so does a New-York-midnight day. The
+# fix is the origin form. `time_bucket('1d', ts, '<session open>')` aligns
+# buckets to the trading session itself.
+#
+# We synthesize three overnight sessions to make the difference concrete. Each
+# holds 4,000 trades with `ts`, `price` and `size` columns.
 
 # %%
 rng = np.random.default_rng(42)
@@ -161,6 +186,10 @@ fut_pd = pd.concat(frames).sort_values("ts").reset_index(drop=True)
 fut_pd["ts"] = fut_pd["ts"].dt.floor("us")  # pandas is ns-resolution; h5i time is us
 fut = pa.Table.from_pandas(fut_pd, preserve_index=False)
 
+print(f"{len(fut_pd):,} overnight trades across 3 sessions")
+fut_pd.head()
+
+# %%
 fut_schema = pa.schema(
     [
         pa.field("ts", pa.timestamp("us", tz="UTC"), nullable=False),
@@ -187,16 +216,17 @@ pd.concat(
 ).reset_index(drop=True)
 
 # %% [markdown]
-# Three sessions of 4,000 trades each: only the session-origin buckets
-# recover them as three clean daily bars - the calendar-day schemes split
-# every session across two buckets.
+# Three sessions of 4,000 trades each, and only the session-origin buckets
+# recover them as three clean daily bars. The calendar-day schemes split every
+# session across two buckets.
 #
 # ## 4. Persist bars as a versioned table
 #
-# Bars are a derived dataset you will rebuild - which is exactly what
-# `db.write` is for: it *replaces* the table contents in one atomic commit
-# while keeping every previous build in the version history. Rebuild the
-# bars after a tick correction and the old bars remain queryable via
+# Bars are a derived dataset you will rebuild, which is exactly what `db.write`
+# is for. It *replaces* the table contents in one atomic commit while keeping
+# every previous build in the version history.
+#
+# Rebuild the bars after a tick correction and the old bars remain queryable via
 # `h5i('bars_5m', <version>)`.
 
 # %%
@@ -223,8 +253,8 @@ commit = db.write(
 # %% [markdown]
 # ## 5. Candlestick view
 #
-# One symbol, one session, straight from the stored bar table: close and
-# VWAP with the high–low range as a band.
+# One symbol, one session, straight from the stored bar table: close and VWAP
+# with the high-low range as a band.
 
 # %%
 one_day = (
@@ -252,10 +282,10 @@ fig.tight_layout()
 # %% [markdown]
 # ## 6. Validate against pandas
 #
-# Trust, but verify: rebuild the 5m bars with `pandas.Grouper` from the same
-# ticks and compare every field. Both floor timestamps to the bucket start
-# and both take open/close by event order, so the two constructions should
-# agree to float precision.
+# Trust, but verify. We rebuild the 5m bars with `pandas.Grouper` from the same
+# ticks and compare every field. Both constructions floor timestamps to the
+# bucket start and both take open and close by event order, so they should agree
+# to float precision.
 
 # %%
 tp = trades.to_pandas()
@@ -285,17 +315,17 @@ print(f"all {len(merged):,} bars match pandas across OHLC, volume, VWAP, count")
 # %% [markdown]
 # ## Takeaways
 #
-# - Ticks to OHLCV+VWAP bars is one aggregation: `time_bucket` +
-#   `.first("ts")`/`.last("ts")` + `vwap`, streaming over time-sorted
-#   storage - and it matches a pandas reference exactly.
+# - Ticks to OHLCV+VWAP bars is one aggregation: `time_bucket` plus
+#   `.first("ts")`/`.last("ts")` plus `vwap`, streaming over time-sorted
+#   storage. It matches a pandas reference exactly.
 # - Writing it as a `bars(width)` function rather than a SQL template means
 #   every width, and the row counts on top of them, come from one definition.
-# - `time_bucket`'s third argument does session alignment: `timezone=` for
-#   DST-safe calendar days, `origin=` for overnight sessions that straddle
+# - `time_bucket`'s third argument does session alignment. Use `timezone=` for
+#   DST-safe calendar days and `origin=` for overnight sessions that straddle
 #   midnight. Naive UTC days silently split Globex-style sessions in two.
-# - Derived bars belong in the database: `db.write` on `bars_5m` gives you
-#   atomic rebuilds with the full build history retained - every downstream
-#   consumer can pin the bar version it was computed from.
+# - Derived bars belong in the database. `db.write` on `bars_5m` gives atomic
+#   rebuilds with the full build history retained, so every downstream consumer
+#   can pin the bar version it was computed from.
 
 # %%
 db.close()

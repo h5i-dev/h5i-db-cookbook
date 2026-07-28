@@ -92,7 +92,7 @@ pure-SQL tour, and a handful of queries stay SQL where no verb exists
 | [08 FX & crypto 24/7 data](notebooks/03_risk_and_production/08_fx_crypto_24_7.ipynb) | No sessions, no gaps: bucketing and rolling stats around the clock |
 | [09 Fixed-income curves](notebooks/03_risk_and_production/09_fixed_income_curves.ipynb) | Point-in-time yield curves, carry/rolldown, curve history |
 | [10 Performance tuning](notebooks/03_risk_and_production/10_performance_tuning.ipynb) | Pruning, compaction, resource limits, batching, and why it's fast |
-| [11 Leakage check](notebooks/03_risk_and_production/11_leakage_check.ipynb) | Pricing hindsight: `arrival_delta` across a sweep, and the two ways it misleads |
+| [11 arrival-delta](notebooks/03_risk_and_production/11_arrival_delta.ipynb) | Pricing hindsight: `arrival_delta` across a sweep, and the two ways it misleads |
 
 ## Layout
 

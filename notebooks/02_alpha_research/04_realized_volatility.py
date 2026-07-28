@@ -1,13 +1,20 @@
 # %% [markdown]
 # # Realized volatility from ticks: signature plots, jumps, overnight risk
 #
-# Realized variance - the sum of squared intraday returns - is the standard
-# nonparametric vol estimate, and computing it well is mostly a *sampling*
-# problem: sample too fast and bid-ask bounce inflates the estimate, too slow
-# and you throw information away. With ticks stored time-sorted in h5i-db,
-# re-bucketing the same data at any frequency is one `time_bucket` query, so
-# the classic diagnostics (signature plot, bipower variation, overnight
-# decomposition) each take a few lines.
+# Realized variance, the sum of squared intraday returns, is the standard
+# nonparametric vol estimate. Computing it well is mostly a *sampling* problem:
+# sample too fast and bid-ask bounce inflates the estimate, too slow and you
+# throw information away.
+#
+# With ticks stored time-sorted, re-bucketing the same data at any frequency is
+# one `time_bucket` query. So the classic diagnostics each take a few lines.
+#
+# In this recipe we:
+#
+# 1. compute daily RV from 5-minute bars,
+# 2. draw the volatility signature plot across ten sampling intervals,
+# 3. separate jumps from continuous variance with bipower variation,
+# 4. split real SPY variance into overnight and intraday parts.
 
 # %%
 import numpy as np
@@ -21,18 +28,35 @@ import cookbook_utils as cu
 db = h5i_db.Database(cu.fresh_db("alpha_rv"), create=True)
 
 # %% [markdown]
-# ## 1. Tick data with a known jump
+# ## 1. The data
 #
-# Five sessions of dense synthetic trades (100k/day) for one symbol. The
-# generator quotes trades on either side of the mid - genuine bid-ask bounce,
-# which is exactly the microstructure noise the signature plot will expose.
-# We also inject a **one-off +1.5% jump** mid-session on day 4 (a level shift
-# in all subsequent prices) so the jump-detection section has something real
-# to find.
+# Five sessions of dense synthetic trades, 100k per day, for one symbol. One row
+# per print.
+#
+# | column | type | meaning |
+# | --- | --- | --- |
+# | `ts` | `timestamp[us, tz=UTC]` | trade timestamp, ascending |
+# | `symbol` | `string` | ticker, `SPX` here |
+# | `price` | `float64` | trade price |
+# | `size` | `int64` | shares traded |
+# | `exchange` | `string` | reporting venue |
+# | `side` | `string` | `B` buyer-initiated, `S` seller-initiated |
+#
+# The generator quotes trades on either side of the mid, giving genuine bid-ask
+# bounce. That is exactly the microstructure noise the signature plot will
+# expose.
 
 # %%
 trades = cu.make_trades(symbols=["SPX"], days=5, trades_per_day=100_000, seed=42)
+print(f"{trades.num_rows:,} rows x {trades.num_columns} columns")
+trades.to_pandas().head()
 
+# %% [markdown]
+# We also inject a **one-off +1.5% jump** mid-session on day 4, as a level shift
+# in all subsequent prices, so the jump-detection section has something real to
+# find. Only `ts`, `symbol`, `price` and `size` go into the table.
+
+# %%
 jump_ts = pd.Timestamp("2026-06-04 17:00:00", tz="UTC")
 tdf = trades.to_pandas()
 tdf.loc[tdf["ts"] >= jump_ts, "price"] *= 1.015  # permanent level shift
@@ -56,11 +80,12 @@ print(f"{len(tdf):,} trades over {tdf.ts.dt.date.nunique()} sessions")
 # %% [markdown]
 # ## 2. Daily RV from 5-minute bars
 #
-# The convention: bucket to 5 minutes, take last trade price per bucket,
-# square the within-session log returns and sum. `time_bucket('5m', ts)` +
-# `last_value(price ORDER BY ts)` does the bucketing in one streaming pass;
-# the per-day diff/sum is a two-liner in pandas. Annualized vol is
-# `sqrt(RV_day * 252)`.
+# The convention is to bucket to 5 minutes, take the last trade price per
+# bucket, then square the within-session log returns and sum them.
+#
+# `time_bucket('5m', ts)` plus `last_value(price ORDER BY ts)` does the
+# bucketing in one streaming pass, and the per-day diff and sum is a two-liner
+# in pandas. Annualized vol is `sqrt(RV_day * 252)`.
 
 # %%
 def price_bars(width: str):
@@ -83,13 +108,16 @@ pd.DataFrame({"rv": rv_daily, "ann_vol_%": np.sqrt(rv_daily * 252) * 100}).round
 # %% [markdown]
 # ## 3. The signature plot
 #
-# Recompute RV at sampling intervals from 1 second to 30 minutes - each one is
-# the *same* frame with a different bucket width. In a frictionless world
-# RV would be flat across frequencies; with bid-ask bounce, observed returns
-# are `true return + iid noise`, and the noise variance is paid *per
-# observation* - so RV blows up as the interval shrinks. The elbow where the
-# curve flattens is the highest frequency you can trust; for liquid names it
-# sits near a few minutes, which is why "5-minute RV" is the industry default.
+# We recompute RV at sampling intervals from 1 second to 30 minutes. Each one is
+# the *same* frame with a different bucket width.
+#
+# In a frictionless world RV would be flat across frequencies. With bid-ask
+# bounce, observed returns are `true return + iid noise`, and the noise variance
+# is paid *per observation*, so RV blows up as the interval shrinks.
+#
+# The elbow where the curve flattens is the highest frequency you can trust. For
+# liquid names it sits near a few minutes, which is why "5-minute RV" is the
+# industry default.
 
 # %%
 INTERVALS_S = [1, 5, 15, 30, 60, 120, 300, 600, 900, 1800]
@@ -117,20 +145,26 @@ ax.set_ylabel("annualized RV vol (%)")
 fig.tight_layout()
 
 # %% [markdown]
-# Textbook shape: the 1-second estimate is roughly double the stable value -
-# at that frequency a large share of each observed "return" is the spread,
-# not volatility. Here the curve flattens by about a minute; on real tick
-# data with more noise sources the elbow typically sits a bit further out,
-# hence the 5-minute convention.
+# Textbook shape. The 1-second estimate is roughly double the stable value,
+# because at that frequency a large share of each observed "return" is the
+# spread rather than volatility.
+#
+# Here the curve flattens by about a minute. On real tick data, with more noise
+# sources, the elbow typically sits a bit further out, hence the 5-minute
+# convention.
 #
 # ## 4. Jumps: bipower variation vs RV
 #
-# RV converges to *total* quadratic variation - continuous variance **plus**
-# squared jumps. Barndorff-Nielsen & Shephard's bipower variation
-# $BV = \frac{\pi}{2}\sum |r_i||r_{i-1}|$ is robust to jumps (a single huge
-# return is multiplied by its finite neighbors instead of being squared), so
-# `max(RV - BV, 0)` isolates the jump contribution. Day 4 - where we injected
-# the 1.5% jump - should light up; the other days should show RV ≈ BV.
+# RV converges to *total* quadratic variation: continuous variance **plus**
+# squared jumps.
+#
+# Barndorff-Nielsen and Shephard's bipower variation,
+# $BV = \frac{\pi}{2}\sum |r_i||r_{i-1}|$, is robust to jumps, because a single
+# huge return is multiplied by its finite neighbours instead of being squared.
+# So `max(RV - BV, 0)` isolates the jump contribution.
+#
+# Day 4, where we injected the 1.5% jump, should light up. The other days should
+# show RV close to BV.
 
 # %%
 def bipower(r: pd.Series) -> float:
@@ -158,19 +192,25 @@ ax.legend()
 fig.tight_layout()
 
 # %% [markdown]
-# The injected jump day shows RV well above BV - the gap is close to the
-# injected `ln(1.015)² ≈ 2.2e-4` - while ordinary days agree to within noise.
+# The injected jump day shows RV well above BV, and the gap is close to the
+# injected `ln(1.015)² ≈ 2.2e-4`. Ordinary days agree to within noise.
 #
 # ## 5. Overnight vs intraday on real SPY data
 #
-# Close-to-close variance splits into an overnight gap (`open/prev close`)
-# and an intraday part (`close/open`). Using the cached 30-minute SPY bars,
-# one SQL query gets session opens and closes - with
-# `time_bucket('1d', ts, 'America/New_York')` so sessions are bucketed on
-# exchange days, not UTC days.
+# Close-to-close variance splits into an overnight gap, `open/prev close`, and
+# an intraday part, `close/open`.
+#
+# Using the cached 30-minute SPY bars, one SQL query gets session opens and
+# closes. `time_bucket('1d', ts, 'America/New_York')` buckets on exchange days
+# rather than UTC days. `cu.fetch_intraday` returns `ts`, `symbol`, `open`,
+# `high`, `low`, `close` and `volume`, of which we keep four.
 
 # %%
 spy = cu.fetch_intraday(["SPY"], period="30d", interval="30m")
+print(f"{spy.num_rows:,} rows x {spy.num_columns} columns")
+spy.to_pandas().head()
+
+# %%
 sschema = pa.schema(
     [
         pa.field("ts", pa.timestamp("us", tz="UTC"), nullable=False),
@@ -201,26 +241,28 @@ print(
 )
 
 # %% [markdown]
-# A meaningful slice of SPY's total variance accrues while the market is
-# closed - risk that intraday RV never sees, which matters for anything
-# marked close-to-close (VaR, options). With only ~30 sessions this split is
-# an illustration, not an estimate; in production you would run it over years
-# of bars, which is the same query on a bigger table.
+# A meaningful slice of SPY's total variance accrues while the market is closed.
+# That is risk intraday RV never sees, and it matters for anything marked
+# close-to-close: VaR, options.
+#
+# With only about 30 sessions this split is an illustration rather than an
+# estimate. In production you would run it over years of bars, which is the same
+# query on a bigger table.
 #
 # ## Takeaways
 #
-# - One tick table + `time_bucket` at ten different widths = a complete
-#   signature plot. Re-bucketing is a query, not a data pipeline. (Note:
-#   sub-minute widths spell the unit out - `'30sec'`, not `'30s'`.)
-# - Microstructure noise is visible even in synthetic data: bid-ask bounce
-#   roughly doubled 1-second RV relative to its stable value; 5-minute
+# - One tick table plus `time_bucket` at ten different widths gives a complete
+#   signature plot. Re-bucketing is a query, not a data pipeline. Note that
+#   sub-minute widths spell the unit out: `'30sec'`, not `'30s'`.
+# - Microstructure noise is visible even in synthetic data. Bid-ask bounce
+#   roughly doubled 1-second RV relative to its stable value, and 5-minute
 #   sampling is the conventional safe elbow.
-# - RV − bipower variation cleanly flagged the one injected jump day and
-#   recovered its magnitude; BV is the jump-robust denominator you want in
+# - RV minus bipower variation cleanly flagged the one injected jump day and
+#   recovered its magnitude. BV is the jump-robust denominator you want in
 #   continuous-vol forecasts.
-# - Overnight variance is real risk (a visible share of SPY's total) and
-#   intraday RV excludes it by construction - decompose before you compare RV
-#   to close-to-close vols.
+# - Overnight variance is real risk, a visible share of SPY's total, and
+#   intraday RV excludes it by construction. Decompose before you compare RV to
+#   close-to-close vols.
 
 # %%
 db.close()

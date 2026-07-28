@@ -1,18 +1,18 @@
 # %% [markdown]
 # # A SQL tour for quants
 #
-# h5i-db's query layer is Apache DataFusion - full SQL with joins, CTEs and
-# window functions - extended with finance-native operators (`time_bucket`,
-# `rolling_avg`, `ewma`, `vwap`, ASOF joins) that exploit time-sorted
-# storage. This recipe is a guided tour: each stop is one concept applied to
-# a realistic task on a 50-name daily panel, ending with the resource guards
-# (`timeout=`, `max_rows=`) that keep exploratory SQL from taking down a
-# shared box. If you know kdb/q or pandas, this is your phrasebook.
+# h5i-db's query layer is Apache DataFusion: full SQL with joins, CTEs and
+# window functions. On top of that sit finance-native operators (`time_bucket`,
+# `rolling_avg`, `ewma`, `vwap`, ASOF joins) that exploit time-sorted storage.
 #
-# Everything here is written as SQL strings on purpose - SQL is the subject.
-# The rest of the cookbook prefers the lazy DataFrame builder (`db.table(...)`
-# plus verbs, recipe 09), which compiles to exactly these statements; `.sql()`
-# on any built query prints the SQL it produced.
+# This recipe is a guided tour. Each stop is one concept applied to a realistic
+# task on a 50-name daily panel. If you know kdb/q or pandas, treat it as a
+# phrasebook.
+#
+# Everything here is written as SQL strings on purpose, because SQL is the
+# subject. The rest of the cookbook prefers the lazy DataFrame builder
+# (`db.table(...)` plus verbs, recipe 09), which compiles to exactly these
+# statements. Call `.sql()` on any built query to see the SQL it produced.
 
 # %%
 import pyarrow as pa
@@ -22,20 +22,49 @@ import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("00_sql_tour"), create=True)
 
+# %% [markdown]
+# ## The data
+#
+# The main table is a daily OHLCV panel from `cu.make_daily_prices`: 50
+# synthetic names over 500 sessions, one row per symbol per session. Returns
+# carry a common market factor plus idiosyncratic noise, so cross-sectional
+# queries have something real to find.
+#
+# | column | type | meaning |
+# | --- | --- | --- |
+# | `ts` | `timestamp[us, tz=UTC]` | session close, 20:00 UTC |
+# | `symbol` | `string` | ticker, `STK000` … `STK049` |
+# | `open`, `high`, `low`, `close` | `float64` | session prices |
+# | `volume` | `int64` | shares traded |
+
+# %%
 prices = cu.make_daily_prices(days=500)  # 50 symbols x 500 sessions
+print(f"prices: {prices.num_rows:,} rows x {prices.num_columns} columns")
+prices.to_pandas().head()
+
+# %% [markdown]
+# One session of ticks comes along for the intraday examples: `ts`, `symbol`,
+# `price`, `size`, `exchange`, `side`, one row per print.
+
+# %%
+trades = cu.make_trades(days=1, trades_per_day=10_000)
+print(f"trades: {trades.num_rows:,} rows x {trades.num_columns} columns")
+trades.to_pandas().head()
+
+# %%
 db.create_table("prices", prices.schema, time_column="ts", sort_key=["ts", "symbol"])
 db.append("prices", prices)
 
-trades = cu.make_trades(days=1, trades_per_day=10_000)
 db.create_table("trades", trades.schema, time_column="ts", sort_key=["ts", "symbol"])
 db.append("trades", trades)
 
-print(f"prices: {len(prices):,} rows   trades: {len(trades):,} rows")
+db.tables()
 
 # %% [markdown]
-# A static reference table for later joins. `time_column` is optional -
-# reference data (sector maps, symbol masters) doesn't need one, though it
-# then gets none of the time-based machinery (pruning, ASOF, `time_bucket`).
+# We also need a static reference table for later joins. `time_column` is
+# optional: reference data such as sector maps and symbol masters does not need
+# one. It then gets none of the time-based machinery either, so no pruning, no
+# ASOF, no `time_bucket`.
 
 # %%
 SECTORS = ["Tech", "Financials", "Energy", "Health Care", "Industrials"]
@@ -53,12 +82,13 @@ db.sql("SELECT sector, count(*) AS names FROM sectors GROUP BY sector ORDER BY s
 # %% [markdown]
 # ## 1. Time-range scans: let the manifest do the work
 #
-# Segments are stored sorted by `ts` and the manifest records each segment's
-# time range, so a time predicate skips segments wholesale before any I/O.
-# Habit to build: **every** exploratory query on a big table starts with a
-# time filter - it is the difference between touching a week and touching
-# ten years. RFC3339 string literals compare directly against timestamp
-# columns.
+# Segments are stored sorted by `ts`, and the manifest records each segment's
+# time range. A time predicate therefore skips segments wholesale, before any
+# I/O happens.
+#
+# The habit to build: start **every** exploratory query on a big table with a
+# time filter. It is the difference between touching a week and touching ten
+# years. RFC3339 string literals compare directly against timestamp columns.
 
 # %%
 db.sql(
@@ -89,11 +119,12 @@ db.sql(
 # %% [markdown]
 # ## 3. Window functions: returns, ranks, rolling risk
 #
-# The three window patterns that cover 90% of daily-panel work:
+# Three window patterns cover most daily-panel work:
 #
-# - `lag()` for returns - no self-join, no pandas round-trip;
-# - `row_number()` for "latest N per symbol" (partition, order DESC, filter);
-# - an explicit `ROWS BETWEEN` frame for rolling moments - here a trailing
+# - `lag()` for returns, with no self-join and no pandas round-trip;
+# - `row_number()` for "latest N per symbol": partition, order descending,
+#   filter;
+# - an explicit `ROWS BETWEEN` frame for rolling moments, here a trailing
 #   20-day annualized volatility.
 
 # %%
@@ -145,15 +176,16 @@ db.sql(
 # %% [markdown]
 # ## 4. h5i sugar: `rolling_avg` and `ewma`
 #
-# `rolling_avg(x, ts, n)` (also `rolling_sum/min/max`) is shorthand for a
-# trailing n-row mean in `ts` order. **One sharp edge:** it runs over the
-# result rows in global time order and is *not* partitioned by symbol - on a
-# multi-symbol table it will happily average AAPL into MSFT. Filter to one
-# symbol first (as below), or use the explicit
+# `rolling_avg(x, ts, n)` is shorthand for a trailing n-row mean in `ts` order.
+# `rolling_sum`, `rolling_min` and `rolling_max` follow the same shape.
+#
+# **One sharp edge:** it runs over the result rows in global time order and is
+# *not* partitioned by symbol. On a multi-symbol table it will happily average
+# AAPL into MSFT. Filter to one symbol first, as below, or use the explicit
 # `avg(...) OVER (PARTITION BY symbol ...)` form for panels.
 #
-# `ewma(x, alpha)` is a proper window function and *does* respect
-# `PARTITION BY` - RiskMetrics-style smoothing in one line.
+# `ewma(x, alpha)` is a proper window function and does respect `PARTITION BY`.
+# That gives RiskMetrics-style smoothing in one line.
 
 # %%
 ma = db.sql(
@@ -176,12 +208,15 @@ print("rolling_avg == explicit OVER frame, verified on", len(ma), "rows")
 ma.tail(3)
 
 # %% [markdown]
-# ## 5. CTEs and joins: a returns → volatility → sector pipeline
+# ## 5. CTEs and joins: a returns to volatility to sector pipeline
 #
-# CTEs keep multi-step research SQL readable - each stage is a named,
-# testable intermediate, and the whole pipeline runs as one plan (no
-# materialized temporaries). Here: daily returns → trailing 20d vol →
-# join the sector map → the current risk picture by sector.
+# CTEs keep multi-step research SQL readable. Each stage is a named, testable
+# intermediate, and the whole pipeline still runs as one plan with no
+# materialized temporaries.
+#
+# The four stages here: daily returns, then trailing 20-day vol, then the latest
+# observation per symbol, then a join to the sector map for the current risk
+# picture.
 
 # %%
 sector_vol = db.sql(
@@ -244,11 +279,13 @@ fig.tight_layout()
 # %% [markdown]
 # ## 6. Date machinery: `time_bucket`, `date_trunc`, `EXTRACT`
 #
-# `time_bucket` is the workhorse - here monthly closes via
-# `last_value(... ORDER BY ts)` inside the GROUP BY (the idiom for "closing"
-# values; no self-join needed), chained into monthly returns with `lag`.
-# `date_trunc` does the same truncation without the extra widths/timezone
-# options; `EXTRACT` pulls calendar fields for seasonality cuts.
+# `time_bucket` is the workhorse. Below it produces monthly closes via
+# `last_value(... ORDER BY ts)` inside the GROUP BY, which is the idiom for
+# closing values and needs no self-join. Those closes chain straight into
+# monthly returns with `lag`.
+#
+# `date_trunc` does the same truncation without the extra width and timezone
+# options. `EXTRACT` pulls calendar fields for seasonality cuts.
 
 # %%
 db.sql(
@@ -297,8 +334,8 @@ db.sql(
 # %% [markdown]
 # ## 7. Distributions and dependence: `approx_percentile_cont`, `corr`
 #
-# Return quantiles without pulling half a million rows into pandas, and
-# pairwise correlation as a plain aggregate over a self-joined returns CTE.
+# Return quantiles without pulling half a million rows into pandas. Pairwise
+# correlation comes out as a plain aggregate over a self-joined returns CTE.
 
 # %%
 db.sql(
@@ -337,11 +374,13 @@ db.sql(
 # %% [markdown]
 # ## 8. Resource guards: fail fast, not slow
 #
-# On a shared research box, the dangerous query is not the wrong one - it is
-# the accidentally huge one. Every `db.sql` call takes `timeout=` (seconds)
-# and `max_rows=`; blowing either raises a typed error (`TimeoutError`,
-# `LimitError`) with a `.code` your tooling can branch on. Set conservative
-# defaults in shared notebooks and raise them deliberately.
+# On a shared research box the dangerous query is not the wrong one. It is the
+# accidentally huge one.
+#
+# Every `db.sql` call takes `timeout=` in seconds and `max_rows=`. Blowing
+# either raises a typed error, `TimeoutError` or `LimitError`, with a `.code`
+# your tooling can branch on. Set conservative defaults in shared notebooks and
+# raise them deliberately.
 
 # %%
 try:
@@ -365,18 +404,18 @@ except h5i_db.TimeoutError as e:
 # %% [markdown]
 # ## Takeaways
 #
-# - Start every query with a time predicate: sorted segments + manifest time
+# - Start every query with a time predicate. Sorted segments plus manifest time
 #   ranges mean the filter prunes I/O, not just rows.
-# - `lag` / `row_number` / `ROWS BETWEEN` frames cover returns, latest-N and
-#   rolling risk without leaving SQL; `last_value(x ORDER BY ts)` in a
-#   GROUP BY is the closing-value idiom.
-# - `rolling_avg` sugar is trailing-N-rows in global time order - filter to
-#   one symbol first; `ewma` is a real window function and honors
+# - `lag`, `row_number` and `ROWS BETWEEN` frames cover returns, latest-N and
+#   rolling risk without leaving SQL. `last_value(x ORDER BY ts)` in a GROUP BY
+#   is the closing-value idiom.
+# - `rolling_avg` sugar is trailing-N-rows in global time order, so filter to
+#   one symbol first. `ewma` is a real window function and honors
 #   `PARTITION BY`.
-# - CTE pipelines (returns → vol → sector join) run as one plan; static
-#   reference tables can skip `time_column` entirely.
+# - CTE pipelines run as one plan. Static reference tables can skip
+#   `time_column` entirely.
 # - `timeout=` and `max_rows=` turn runaway queries into typed, catchable
-#   errors - production etiquette for shared databases.
+#   errors. That is production etiquette on a shared database.
 
 # %%
 db.close()

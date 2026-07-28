@@ -1,19 +1,26 @@
 # %% [markdown]
 # # Options: implied-vol surfaces as versioned marks
 #
-# A vol desk's surface is not one object - it is a *sequence* of marks: EOD
-# snapshots, intraday re-marks, corrections. Storing each chain snapshot as an
-# h5i-db commit gives you the whole sequence with O(1) access to any of them:
-# `h5i('chain', v)` in SQL is "the surface as it was marked at T", which is
-# exactly the question risk, P&L-explain and model-validation keep asking.
+# A vol desk's surface is not one object. It is a *sequence* of marks: EOD
+# snapshots, intraday re-marks, corrections.
 #
-# The table layout showcases a detail worth copying: **both** `ts` (mark time)
-# and `expiry` are `timestamp[us, UTC]` columns - tenor is always *derived*
-# (`expiry - ts`), never stored, so it can never go stale as the clock moves.
+# Storing each chain snapshot as a commit gives you the whole sequence with O(1)
+# access to any of them. `h5i('chain', v)` in SQL is "the surface as it was
+# marked at T", which is exactly the question risk, P&L-explain and model
+# validation keep asking.
 #
-# We store 5 daily SPX-style chain snapshots, extract ATM term structure and
-# 25-delta risk reversals / butterflies in SQL, draw the surface, then use
-# versioning to answer "what did the desk see at yesterday's close?"
+# The table layout showcases a detail worth copying. **Both** `ts`, the mark
+# time, and `expiry` are `timestamp[us, UTC]` columns. Tenor is always
+# *derived* as `expiry - ts`, never stored, so it can never go stale as the
+# clock moves.
+#
+# In this recipe we:
+#
+# 1. store 5 daily SPX-style chain snapshots, one commit each,
+# 2. extract the ATM term structure and 25-delta risk reversals and butterflies
+#    in SQL,
+# 3. draw the surface,
+# 4. use versioning to answer "what did the desk see at yesterday's close?"
 
 # %%
 import matplotlib.pyplot as plt
@@ -27,16 +34,38 @@ import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("prod_options"), create=True)
 
-chain = cu.make_option_chain(snapshots=5)  # ts, underlier, expiry, strike, cp, iv, mid, delta
-chain.schema
+# %% [markdown]
+# ## 1. The data
+#
+# `cu.make_option_chain` gives daily option-chain snapshots. One row per
+# contract per mark date.
+#
+# | column | type | meaning |
+# | --- | --- | --- |
+# | `ts` | `timestamp[us, tz=UTC]` | mark time, the session close |
+# | `underlier` | `string` | underlying, `SPX` here |
+# | `expiry` | `timestamp[us, tz=UTC]` | contract expiry |
+# | `strike` | `float64` | strike price |
+# | `cp` | `string` | `C` call, `P` put |
+# | `iv` | `float64` | implied volatility |
+# | `mid` | `float64` | option mid price |
+# | `delta` | `float64` | Black-Scholes delta |
+
+# %%
+chain = cu.make_option_chain(snapshots=5)
+print(f"{chain.num_rows:,} rows x {chain.num_columns} columns, "
+      f"{len(set(chain['ts'].to_pylist()))} mark dates")
+chain.to_pandas().head()
 
 # %% [markdown]
-# ## 1. One snapshot day = one commit
+# ## 2. One snapshot day is one commit
 #
-# `sort_key` starts with the time column (required) and then orders each
-# snapshot by expiry and strike - the natural scan order for surface queries.
-# Appending day by day makes every EOD mark its own version, with a `note`
-# that becomes the audit trail.
+# `sort_key` starts with the time column, which is required, and then orders
+# each snapshot by expiry and strike. That is the natural scan order for surface
+# queries.
+#
+# Appending day by day makes every EOD mark its own version, with a `note` that
+# becomes the audit trail.
 
 # %%
 db.create_table("chain", chain.schema, time_column="ts", sort_key=["ts", "expiry", "strike"])
@@ -55,13 +84,14 @@ for day_ts, day_chain in chain_df.groupby("ts"):
 ]
 
 # %% [markdown]
-# ## 2. Recover spot from put-call parity
+# ## 3. Recover spot from put-call parity
 #
-# The chain carries no spot column - and it doesn't need one. With zero rates
-# (as in this generator), parity gives `C - P = S - K`, so `S = K + C - P` for
-# every strike. Averaging across the chain recovers the forward/spot per mark
-# date to within quote-rounding noise; we reuse it below to put strikes on a
-# moneyness axis.
+# The chain carries no spot column, and it does not need one.
+#
+# With zero rates, as in this generator, parity gives `C - P = S - K`, so
+# `S = K + C - P` for every strike. Averaging across the chain recovers the
+# forward spot per mark date to within quote-rounding noise. We reuse it below
+# to put strikes on a moneyness axis.
 
 # %%
 # Put-call parity as a self-join: the calls frame joined to the puts frame on
@@ -84,10 +114,10 @@ spot = SPOT.sort("ts").to_pandas()
 spot
 
 # %% [markdown]
-# ## 3. ATM term structure per mark date
+# ## 4. ATM term structure per mark date
 #
-# For each `(ts, expiry)` we rank call strikes by distance to spot and keep
-# the nearest - a window function over the parity-spot CTE. Tenor is derived
+# For each `(ts, expiry)` we rank call strikes by distance to spot and keep the
+# nearest. That is a window function over the parity-spot CTE. Tenor is derived
 # in pandas from the two timestamp columns.
 
 # %%
@@ -133,14 +163,17 @@ ax.legend(fontsize=8)
 fig.tight_layout()
 
 # %% [markdown]
-# ## 4. 25-delta risk reversal and butterfly
+# ## 5. 25-delta risk reversal and butterfly
 #
 # The chain stores deltas, so the standard skew summary is three window ranks:
-# nearest-to-+0.25 call, nearest-to-−0.25 put, nearest-to-0.50 call (ATM).
-# `RR = σ_25C − σ_25P` (skew direction), `BF = ½(σ_25C + σ_25P) − σ_ATM`
-# (wing convexity). On short tenors the strike grid is coarse in delta space -
-# "nearest to 25Δ" can be a fair distance from 25Δ, as on any real listed
-# chain, so read the short end with that in mind.
+# nearest-to-+0.25 call, nearest-to-−0.25 put, and nearest-to-0.50 call for ATM.
+#
+# `RR = σ_25C − σ_25P` gives skew direction, and
+# `BF = ½(σ_25C + σ_25P) − σ_ATM` gives wing convexity.
+#
+# On short tenors the strike grid is coarse in delta space, so "nearest to 25Δ"
+# can sit a fair distance from 25Δ, as on any real listed chain. Read the short
+# end with that in mind.
 
 # %%
 # Three ranked CTEs joined pairwise: .join() is binary and aliases each side
@@ -173,12 +206,14 @@ latest_ts = rr_bf["ts"].max()
 rr_bf[rr_bf["ts"] == latest_ts][["tenor_d", "atm_iv", "rr25", "bf25"]].round(4)
 
 # %% [markdown]
-# ## 5. The surface, moneyness × tenor
+# ## 6. The surface, moneyness by tenor
 #
 # One mark date, calls only. Within a snapshot every expiry shares the same
-# strike grid, so a pivot gives a clean rectangular surface; the parity spot
-# converts strikes to moneyness. `pcolormesh` with a perceptually-uniform
-# sequential colormap - IV is a magnitude, so one hue, light-to-dark.
+# strike grid, so a pivot gives a clean rectangular surface, and the parity spot
+# converts strikes to moneyness.
+#
+# We use `pcolormesh` with a perceptually-uniform sequential colormap. IV is a
+# magnitude, so one hue, light to dark.
 
 # %%
 day_spot = float(spot.loc[spot["ts"] == latest_ts, "spot"].iloc[0])
@@ -200,12 +235,13 @@ fig.colorbar(pcm, ax=ax, label="IV (%)")
 fig.tight_layout()
 
 # %% [markdown]
-# ## 6. Smile evolution across the week
+# ## 7. Smile evolution across the week
 #
-# The 30-day smile from each of the five snapshots, overlaid. Each day the
-# chain re-lists a fresh 30d expiry, so we select by *derived* tenor - one
-# more payoff of keeping `expiry` as a timestamp rather than storing a tenor
-# label that drifts.
+# The 30-day smile from each of the five snapshots, overlaid.
+#
+# Each day the chain re-lists a fresh 30-day expiry, so we select by *derived*
+# tenor. That is one more payoff of keeping `expiry` as a timestamp rather than
+# storing a tenor label that drifts.
 
 # %%
 smiles = chain_df[chain_df["cp"] == "C"].copy()
@@ -224,13 +260,16 @@ ax.legend(fontsize=8)
 fig.tight_layout()
 
 # %% [markdown]
-# ## 7. As-of queries: the surface as marked at T
+# ## 8. As-of queries: the surface as marked at T
 #
 # Because each snapshot is a commit, "the surface the desk saw at the close of
-# day 2" is not a filter - it is a *version*. `h5i('chain', 2)` returns the
-# table exactly as it stood after the day-2 commit; the day-3..5 marks do not
-# exist in that view. The wall-clock variant `read(as_of=...)` answers the
-# same question by commit time, which is what an auditor will hand you.
+# day 2" is not a filter. It is a *version*.
+#
+# `h5i('chain', 2)` returns the table exactly as it stood after the day-2
+# commit, and the day-3 through day-5 marks do not exist in that view.
+#
+# The wall-clock variant `read(as_of=...)` answers the same question by commit
+# time, which is what an auditor will hand you.
 
 # %%
 db.sql(
@@ -249,16 +288,17 @@ print(f"read(as_of='{v3_commit_iso}') -> {as_of_v3.num_rows} rows,",
       f"latest mark {pd.Timestamp(pa.compute.max(as_of_v3['ts']).as_py()).date()}")
 
 # %% [markdown]
-# ## 8. Intraday re-marks are just more versions
+# ## 9. Intraday re-marks are just more versions
 #
-# Late in day 5 the desk bumps vols 6% (risk-off re-mark) and commits the new
-# marks 30 minutes after the close. Append semantics allow it - the re-mark
-# timestamps are later than the EOD ones - and now two generations of day-5
-# marks coexist in the head. The desk's two standing questions become two
-# one-liners:
+# Late in day 5 the desk bumps vols 6% in a risk-off re-mark, and commits the
+# new marks 30 minutes after the close.
 #
-# - *current* surface → latest mark per contract (a window dedup);
-# - *as marked at the close* → `h5i('chain', 5)`, frozen forever.
+# Append semantics allow it, because the re-mark timestamps are later than the
+# EOD ones. Now two generations of day-5 marks coexist in the head, and the
+# desk's two standing questions become two one-liners.
+#
+# - The *current* surface is the latest mark per contract, a window dedup.
+# - The surface *as marked at the close* is `h5i('chain', 5)`, frozen forever.
 
 # %%
 day5 = chain_df[chain_df["ts"] == latest_ts].copy()
@@ -285,19 +325,19 @@ db.sql(
 # %% [markdown]
 # ## Takeaways
 #
-# - Model `expiry` as a `timestamp[us, UTC]` column next to the mark time
-#   `ts`: tenor, moneyness and "which listed expiry is ~30d today" are all
-#   derived, never stale.
+# - Model `expiry` as a `timestamp[us, UTC]` column next to the mark time `ts`.
+#   Tenor, moneyness and "which listed expiry is about 30d today" are then all
+#   derived, and never stale.
 # - One chain snapshot per commit turns `versions()` into the desk's marking
-#   history, and `h5i('chain', v)` / `read(as_of=...)` into instant
-#   "surface as marked at T" queries - no bitemporal bookkeeping tables.
-# - Window functions do the surface analytics in SQL: nearest-to-spot rank
-#   for ATM, nearest-to-25Δ ranks for risk reversal and butterfly, a
+#   history, and turns `h5i('chain', v)` and `read(as_of=...)` into instant
+#   "surface as marked at T" queries. No bitemporal bookkeeping tables.
+# - Window functions do the surface analytics in SQL: nearest-to-spot rank for
+#   ATM, nearest-to-25Δ ranks for risk reversal and butterfly, and a
 #   `row_number ... ORDER BY ts DESC` dedup for latest-mark-per-contract.
-# - Put-call parity recovers spot from the chain itself - one fewer join
-#   against a spot feed in every surface query.
-# - Intraday re-marks are ordinary appends; the close marks stay frozen at
-#   their version while the head reflects the latest generation.
+# - Put-call parity recovers spot from the chain itself, which removes a join
+#   against a spot feed from every surface query.
+# - Intraday re-marks are ordinary appends. The close marks stay frozen at their
+#   version while the head reflects the latest generation.
 
 # %%
 db.close()

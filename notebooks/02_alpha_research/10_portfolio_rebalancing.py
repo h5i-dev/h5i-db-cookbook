@@ -1,20 +1,22 @@
 # %% [markdown]
 # # Portfolio rebalancing with versioned holdings
 #
-# A portfolio book is the canonical versioned dataset: every rebalance is a
-# commit, every commit has a note, and questions like "what did we hold
-# after the March rebalance?" or "how much did we trade in January?" are
-# version queries, not spreadsheet archaeology. This recipe runs a monthly
-# momentum portfolio on real data (30 S&P names, 2018-2026) and uses
-# h5i-db's version chain as the system of record:
+# A portfolio book is the canonical versioned dataset. Every rebalance is a
+# commit, every commit has a note, and questions like "what did we hold after
+# the March rebalance?" or "how much did we trade in January?" become version
+# queries rather than spreadsheet archaeology.
 #
-# 1. `prices` table from real daily closes; 12-1 momentum in SQL,
-# 2. a `holdings` table appended once per rebalance - one commit per
-#    rebalance, with a note - plus an audit snapshot,
-# 3. turnover and trade lists reconstructed *from version diffs* with
-#    `h5i('holdings', v)` in SQL,
-# 4. NAV vs benchmark, weight drift between rebalances, and point-in-time
-#    book reconstruction.
+# This recipe runs a monthly momentum portfolio on real data, 30 S&P names from
+# 2018 to 2026, and uses the version chain as the system of record.
+#
+# 1. Build a `prices` table from real daily closes and compute 12-1 momentum in
+#    SQL.
+# 2. Append to a `holdings` table once per rebalance, one noted commit each,
+#    plus an audit snapshot.
+# 3. Reconstruct turnover and trade lists *from version diffs* with
+#    `h5i('holdings', v)` in SQL.
+# 4. Compare NAV against a benchmark, measure weight drift between rebalances,
+#    and reconstruct the book point-in-time.
 
 # %%
 import numpy as np
@@ -28,15 +30,31 @@ import cookbook_utils as cu
 db = h5i_db.Database(cu.fresh_db("alpha_rebalance"), create=True)
 
 # %% [markdown]
-# ## 1. Real prices in, momentum out
+# ## 1. The data
 #
-# Split-adjusted closes for 30 liquid names. The 12-1 momentum signal -
-# trailing 12-month return excluding the most recent month, the classic
-# formation rule - is two `lag()` windows in SQL: `lag(adj_close, 21)` over
-# `lag(adj_close, 252)` on the trading-day series, per symbol.
+# `cu.fetch_daily` gives real daily bars for 30 liquid names, 2018 to 2026, one
+# row per symbol per session.
+#
+# | column | type | meaning |
+# | --- | --- | --- |
+# | `ts` | `timestamp[us, tz=UTC]` | session date |
+# | `symbol` | `string` | ticker |
+# | `open`, `high`, `low`, `close` | `float64` | session prices |
+# | `adj_close` | `float64` | close adjusted for splits and dividends |
+# | `volume` | `int64` | shares traded |
 
 # %%
 raw = cu.fetch_daily(cu.SP500_EXAMPLES, start="2018-01-01", end="2026-07-01").to_pandas()
+print(f"{len(raw):,} rows x {raw.shape[1]} columns, {raw['symbol'].nunique()} symbols")
+raw.head()
+
+# %% [markdown]
+# We keep `ts`, `symbol` and `adj_close`. The 12-1 momentum signal is the
+# trailing 12-month return excluding the most recent month, the classic
+# formation rule. In SQL that is two `lag()` windows per symbol:
+# `lag(adj_close, 21)` over `lag(adj_close, 252)` on the trading-day series.
+
+# %%
 px_schema = pa.schema(
     [
         pa.field("ts", pa.timestamp("us", tz="UTC"), nullable=False),
@@ -69,14 +87,19 @@ print(f"{px.shape[0]} trading days x {px.shape[1]} symbols")
 # %% [markdown]
 # ## 2. The rebalance loop: one commit per rebalance
 #
-# Monthly, 2023-01 through 2026-06: rank on momentum, hold the top 10
-# equal-weight, trade at that session's close, pay 10 bps on traded
-# notional. Each rebalance appends that day's book (shares, price, weight
-# per held name) to `holdings` - an atomic commit carrying a
-# `note="rebalance YYYY-MM"`. The book *history* is append-only; the *state*
-# at any version is "the rows at that version's latest timestamp". At the
-# December 2025 rebalance we also cut a named snapshot, the audit anchor a
-# year-end review would ask for.
+# Monthly, from 2023-01 through 2026-06: rank on momentum, hold the top 10
+# equal-weight, trade at that session's close, and pay 10 bps on traded
+# notional.
+#
+# Each rebalance appends that day's book, meaning shares, price and weight per
+# held name, to `holdings`. That is an atomic commit carrying a
+# `note="rebalance YYYY-MM"`.
+#
+# The book *history* is append-only. The *state* at any version is the set of
+# rows at that version's latest timestamp.
+#
+# At the December 2025 rebalance we also cut a named snapshot, the audit anchor
+# a year-end review would ask for.
 
 # %%
 hold_schema = pa.schema(
@@ -136,11 +159,12 @@ for v in versions[-3:]:
 # %% [markdown]
 # ## 3. Trade lists and turnover from version diffs
 #
-# Nothing in the loop wrote a "trades" table - it does not need to exist.
-# The trade list *is* the difference between consecutive versions of the
-# book. `h5i('holdings', v)` exposes any version to SQL, so a FULL OUTER
-# JOIN of version `v`'s latest book against version `v-1`'s reconstructs
-# exactly what was bought and sold, including entries and exits:
+# Nothing in the loop wrote a "trades" table, and it does not need to exist. The
+# trade list *is* the difference between consecutive versions of the book.
+#
+# `h5i('holdings', v)` exposes any version to SQL, so a FULL OUTER JOIN of
+# version `v`'s latest book against version `v-1`'s reconstructs exactly what
+# was bought and sold, including entries and exits.
 
 # %%
 head = versions[-1]["sequence"]
@@ -188,9 +212,9 @@ assert len(trade_list) >= TOP_N, "diff must cover holds, entries and exits"
 trade_list.round(1)
 
 # %% [markdown]
-# The same diff, aggregated, gives per-rebalance traded notional and
-# two-way turnover - an audit-grade number derived purely from committed
-# versions, which we cross-check against the loop's own ledger.
+# The same diff, aggregated, gives per-rebalance traded notional and two-way
+# turnover. That is an audit-grade number derived purely from committed
+# versions, and we cross-check it against the loop's own ledger.
 
 # %%
 turnover_rows = []
@@ -224,11 +248,13 @@ print(f"version-diff turnover matches the loop's ledger; mean two-way turnover "
 # %% [markdown]
 # ## 4. NAV, benchmark, and drift between rebalances
 #
-# Daily NAV is just held shares marked on the price panel. The benchmark is
-# the equal-weight 30-name portfolio (daily rebalanced, no costs - a hard
-# bar). Between rebalances the book drifts off its equal-weight targets;
-# the L1 drift `0.5 * sum|w - w_target|` shows the sawtooth that monthly
-# rebalancing tolerates.
+# Daily NAV is just held shares marked on the price panel. The benchmark is the
+# equal-weight 30-name portfolio, rebalanced daily and charged no costs, which
+# makes it a hard bar.
+#
+# Between rebalances the book drifts off its equal-weight targets. The L1 drift
+# `0.5 * sum|w - w_target|` shows the sawtooth that monthly rebalancing
+# tolerates.
 
 # %%
 start_ts = month_ends[0]
@@ -285,20 +311,21 @@ axes[1].legend()
 fig.tight_layout()
 
 # %% [markdown]
-# ## 5. "What was the book?" - three ways to reconstruct it
+# ## 5. "What was the book?" Three ways to reconstruct it
 #
-# The audit story that versioning buys:
+# This is the audit story that versioning buys.
 #
-# - **by data time** - `WHERE ts = ...` on the live table (the book struck
-#   at a given rebalance date),
-# - **by named snapshot** - `h5i('holdings', 'eoy-2025')`, pinned when the
-#   December 2025 rebalance was committed,
-# - **by commit time** - `read(as_of=...)` replays the table exactly as it
+# - **By data time.** `WHERE ts = ...` on the live table gives the book struck
+#   at a given rebalance date.
+# - **By named snapshot.** `h5i('holdings', 'eoy-2025')` was pinned when the
+#   December 2025 rebalance was committed.
+# - **By commit time.** `read(as_of=...)` replays the table exactly as it
 #   existed when a given commit was the head. In this notebook all commits
-#   happened seconds apart, so `as_of` maps to run time rather than
-#   calendar time; in production, where each rebalance commits at its real
-#   EOD, `as_of="2025-12-31T23:00:00Z"` *is* the calendar question. Either
-#   way it is O(1) - no replay, no restore.
+#   happened seconds apart, so `as_of` maps to run time rather than calendar
+#   time. In production, where each rebalance commits at its real EOD,
+#   `as_of="2025-12-31T23:00:00Z"` *is* the calendar question.
+#
+# All three are O(1). No replay, no restore.
 
 # %%
 # A scalar subquery has no verb, so resolve the latest book timestamp first
@@ -327,19 +354,19 @@ print(f"\nread(version={v_dec}) == read(as_of='{as_of_iso}'): {by_version.num_ro
 # %% [markdown]
 # ## Takeaways
 #
-# - One rebalance = one commit with a note is the natural grain for a
-#   holdings table: `versions()` becomes the rebalance log, and no separate
-#   trades table is needed - trade lists and turnover fall out of
-#   `h5i('holdings', v)` FULL OUTER JOIN `h5i('holdings', v-1)`, and they
-#   reconciled exactly with the simulation's own ledger.
-# - Named snapshots (`'eoy-2025'`) give auditors a stable handle; version
+# - One rebalance per noted commit is the natural grain for a holdings table.
+#   `versions()` becomes the rebalance log, and no separate trades table is
+#   needed. Trade lists and turnover fall out of `h5i('holdings', v)` FULL OUTER
+#   JOIN `h5i('holdings', v-1)`, and they reconciled exactly with the
+#   simulation's own ledger.
+# - Named snapshots such as `'eoy-2025'` give auditors a stable handle. Version
 #   pins and `as_of` reads answer "what did the book look like" in O(1).
-# - The momentum-vs-benchmark result is period-dependent, as momentum
-#   always is (here it wins on return and loses on Sharpe) - the point is
-#   the machinery: costs, turnover (~40% two-way per month for a top-10
-#   momentum book) and drift are all measured from committed state, not
-#   recomputed hopefully.
-# - 12-1 momentum was two `lag()` windows in SQL; the only pandas is the
+# - The momentum-versus-benchmark result is period-dependent, as momentum always
+#   is; here it wins on return and loses on Sharpe. The point is the machinery.
+#   Costs, turnover (around 40% two-way per month for a top-10 momentum book)
+#   and drift are all measured from committed state rather than recomputed
+#   hopefully.
+# - 12-1 momentum was two `lag()` windows in SQL. The only pandas is the
 #   simulation loop itself.
 
 # %%

@@ -1,13 +1,22 @@
 # %% [markdown]
 # # Pairs trading with a version-pinned data spine
 #
-# A cointegration pair strategy on real prices: scan candidate pairs with an
+# A cointegration pair strategy on real prices. We scan candidate pairs with an
 # Engle-Granger test, build a rolling hedge ratio, compute the spread z-score
-# *in SQL* with h5i-db's window functions, and backtest with lagged signals
-# and costs. The h5i-db twist: prices are loaded in two commits, so at the end
-# we re-run the whole pipeline against `h5i('prices', v_early)` - the exact
-# table an earlier study would have seen - and show that results are pinned to
-# a data version, not to whatever the vendor file happens to contain today.
+# *in SQL* with window functions, and backtest with lagged signals and costs.
+#
+# The h5i-db twist comes at the end. Prices are loaded in two commits, so we can
+# re-run the whole pipeline against `h5i('prices', v_early)`, the exact table an
+# earlier study would have seen. Results are pinned to a data version rather
+# than to whatever the vendor file happens to contain today.
+#
+# In this recipe we:
+#
+# 1. load prices in two meaningful commits,
+# 2. scan three candidate pairs for cointegration,
+# 3. build a rolling hedge ratio and store the spread as its own table,
+# 4. compute the z-score in the database and backtest it honestly,
+# 5. re-run the entire study against an earlier data version.
 
 # %%
 import numpy as np
@@ -21,16 +30,32 @@ import cookbook_utils as cu
 db = h5i_db.Database(cu.fresh_db("alpha_pairs"), create=True)
 
 # %% [markdown]
-# ## 1. Load prices in two commits
+# ## 1. The data
 #
-# Same 30-name daily cache as the momentum recipe. We deliberately split the
-# load at 2025-01-01: the first `append` is the table a hypothetical 2024
-# study ran on, the second brings it to the present. Each `append` is one
-# atomic commit; `versions()` keeps both forever.
+# The same 30-name daily cache as the momentum recipe, from `cu.fetch_daily`.
+# One row per symbol per session.
+#
+# | column | type | meaning |
+# | --- | --- | --- |
+# | `ts` | `timestamp[us, tz=UTC]` | session date |
+# | `symbol` | `string` | ticker |
+# | `open`, `high`, `low`, `close` | `float64` | session prices |
+# | `adj_close` | `float64` | close adjusted for splits and dividends |
+# | `volume` | `int64` | shares traded |
 
 # %%
 daily = cu.fetch_daily(cu.SP500_EXAMPLES, start="2018-01-01", end="2026-07-01")
+print(f"{daily.num_rows:,} rows x {daily.num_columns} columns, "
+      f"{len(set(daily['symbol'].to_pylist()))} symbols")
+daily.to_pandas().head()
 
+# %% [markdown]
+# We deliberately split the load at 2025-01-01. The first `append` is the table
+# a hypothetical 2024 study ran on, and the second brings it to the present.
+#
+# Each `append` is one atomic commit, and `versions()` keeps both forever.
+
+# %%
 schema = pa.schema(
     [
         pa.field("ts", pa.timestamp("us", tz="UTC"), nullable=False),
@@ -58,9 +83,10 @@ print(f"v{v_early}: {c1['rows_total']:,} rows   v{c2['sequence']} (head): {c2['r
 #
 # Three economically sensible candidates from the universe: KO/PEP, GS/JPM,
 # CVX/XOM. We pull log adjusted closes with a plain SQL scan and run the
-# Engle-Granger test (`statsmodels.coint`) on each. Correlated is not
-# cointegrated - the p-value tests whether the *spread* is stationary, which
-# is what mean reversion actually needs.
+# Engle-Granger test from `statsmodels` on each.
+#
+# Correlated is not cointegrated. The p-value tests whether the *spread* is
+# stationary, which is what mean reversion actually needs.
 
 # %%
 from statsmodels.tsa.stattools import coint
@@ -94,17 +120,19 @@ scan = pd.DataFrame(
 scan.round(4)
 
 # %% [markdown]
-# Only CVX/XOM clears a 5% threshold on this sample - KO/PEP, the textbook
-# pair, does not (their return correlation is high but the spread trends).
-# That is a typical scan outcome and worth internalizing: most "obvious"
+# Only CVX/XOM clears a 5% threshold on this sample. KO/PEP, the textbook pair,
+# does not: their return correlation is high but the spread trends.
+#
+# That is a typical scan outcome and worth internalizing, because most "obvious"
 # pairs fail the stationarity test. We trade CVX/XOM.
 #
 # ## 3. Rolling hedge ratio and the spread
 #
-# The hedge ratio is a rolling 252-day OLS beta of log XOM on log CVX
-# (rolling cov/var - same thing, vectorized). The spread
-# `log(XOM) - beta*log(CVX)` and its beta go into their own h5i table so the
-# signal step can run in SQL, and so the spread series itself is versioned
+# The hedge ratio is a rolling 252-day OLS beta of log XOM on log CVX, computed
+# as rolling cov over var, which is the same thing vectorized.
+#
+# The spread `log(XOM) - beta*log(CVX)` and its beta go into their own h5i
+# table. That lets the signal step run in SQL, and it versions the spread series
 # alongside the prices that produced it.
 
 # %%
@@ -136,12 +164,13 @@ len(spread_df)
 # ## 4. Z-score in the database
 #
 # The trading signal is the spread's z-score against a 60-day window.
-# `.rolling_mean(60, order_by="ts")` and `.rolling_std(60, order_by="ts")`
-# each lower to a windowed aggregate over sorted storage - one query, no
-# pandas `rolling()` needed until the stateful backtest itself. (These carry
-# a `PARTITION BY` when you pass `partition_by=`; the `rolling_avg` SQL sugar
-# never does, which is why it is only safe on a single-series table like this
-# one.)
+# `.rolling_mean(60, order_by="ts")` and `.rolling_std(60, order_by="ts")` each
+# lower to a windowed aggregate over sorted storage. One query, and no pandas
+# `rolling()` until the stateful backtest itself.
+#
+# These verbs carry a `PARTITION BY` when you pass `partition_by=`. The
+# `rolling_avg` SQL sugar never does, which is why it is only safe on a
+# single-series table like this one.
 
 # %%
 zs = (
@@ -160,15 +189,18 @@ zs.tail(3).round(4)
 # %% [markdown]
 # ## 5. Backtest: enter at |z| > 2, exit at zero-crossing
 #
-# The entry/exit rule is stateful, so we run a small explicit loop (2k rows -
-# instant). Hygiene:
+# The entry and exit rule is stateful, so we run a small explicit loop. At 2k
+# rows it is instant.
 #
-# - positions are decided on **yesterday's z** (`shift(1)`) - no lookahead;
-# - daily P&L uses the **lagged** hedge ratio:
-#   `pos[t-1] * (dlog XOM - beta[t-1] * dlog CVX)` - the return of the book
-#   you actually held, not of a spread whose beta silently rebalanced itself;
-# - costs: 10 bps per leg on notional traded, so a round turn on the pair
-#   costs ~`2 * (1 + |beta|) * 10` bps.
+# The hygiene rules:
+#
+# - positions are decided on **yesterday's z** via `shift(1)`, so no lookahead;
+# - daily P&L uses the **lagged** hedge ratio,
+#   `pos[t-1] * (dlog XOM - beta[t-1] * dlog CVX)`. That is the return of the
+#   book you actually held, not of a spread whose beta silently rebalanced
+#   itself;
+# - costs are 10 bps per leg on notional traded, so a round turn on the pair
+#   costs roughly `2 * (1 + |beta|) * 10` bps.
 
 # %%
 z_lag = zs["z"].shift(1)
@@ -222,11 +254,12 @@ axes[1].set_xlabel("date")
 fig.tight_layout()
 
 # %% [markdown]
-# A weakly positive Sharpe with deep drawdowns: holding a diverging spread all
-# the way back to its mean is exactly how pairs books get hurt. With one pair,
-# a borderline p-value and no stop-loss, this is a methodology demo, not a
-# strategy - a real book would diversify across many pairs and cap divergence
-# risk.
+# A weakly positive Sharpe with deep drawdowns. Holding a diverging spread all
+# the way back to its mean is exactly how pairs books get hurt.
+#
+# With one pair, a borderline p-value and no stop-loss, this is a methodology
+# demo rather than a strategy. A real book would diversify across many pairs and
+# cap divergence risk.
 #
 # ## 6. Store the signal and pin the run
 #
@@ -254,11 +287,12 @@ db.snapshot("pairs-run-001", tables=["prices", "spread", "signals"], note="CVX/X
 # %% [markdown]
 # ## 7. Re-run the pipeline on an earlier data version
 #
-# The whole study, parameterized by *which version of `prices` it reads*.
-# Because the read point is an argument to `db.table(...)` rather than text
-# spliced into a query, that is one keyword: `run_pipeline(version=v_early)`.
-# Running on the pre-2025 version reproduces what a 2024 study would have
-# found; running it twice on the same version is bit-identical - the property
+# Here is the whole study, parameterized by *which version of `prices` it
+# reads*. Because the read point is an argument to `db.table(...)` rather than
+# text spliced into a query, that is one keyword: `run_pipeline(version=v_early)`.
+#
+# Running on the pre-2025 version reproduces what a 2024 study would have found.
+# Running it twice on the same version is bit-identical, which is the property
 # that matters when a vendor restates history under your feet.
 
 # %%
@@ -302,21 +336,21 @@ assert runs.iloc[1].equals(runs.iloc[2]), "same version must reproduce exactly"
 runs
 
 # %% [markdown]
-# The pre-2025 run sees a different sample (different p-value, different
-# Sharpe) - and re-running on that pinned version is exactly reproducible.
+# The pre-2025 run sees a different sample, giving a different p-value and a
+# different Sharpe. Re-running on that pinned version is exactly reproducible.
 # "Which data did this number come from?" has a precise answer: a version
 # integer.
 #
 # ## Takeaways
 #
-# - Engle-Granger on real data is humbling: of three sensible candidates only
+# - Engle-Granger on real data is humbling. Of three sensible candidates only
 #   CVX/XOM was cointegrated at 5%. Correlation is not cointegration.
-# - The z-score ran entirely in SQL - `rolling_avg` sugar plus a standard
-#   `stddev ... OVER ROWS` window on the stored `spread` table.
-# - Backtest honesty: lagged z, lagged hedge ratio in the P&L, per-leg costs.
-#   The result (modest Sharpe, ugly drawdowns) is what single-pair books look
-#   like.
-# - Loading data in meaningful commits pays off later: `h5i('prices', v)`
+# - The z-score ran entirely in SQL, through `rolling_mean` and `rolling_std`
+#   verbs over the stored `spread` table.
+# - Backtest honesty means lagged z, lagged hedge ratio in the P&L, and per-leg
+#   costs. The result, a modest Sharpe with ugly drawdowns, is what single-pair
+#   books look like.
+# - Loading data in meaningful commits pays off later. `h5i('prices', v)`
 #   re-runs any study against the exact bytes it originally saw, and
 #   `db.snapshot(...)` names that state across all three tables at once.
 

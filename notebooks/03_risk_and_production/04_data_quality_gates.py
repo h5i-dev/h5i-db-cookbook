@@ -2,13 +2,16 @@
 # # Data-quality gates: staging, policy, and previewable remediation
 #
 # The worst place to discover a broken vendor file is in the P&L meeting.
-# The pattern that prevents it is old ETL wisdom with a versioned twist:
-# **land every delivery in a staging table, run gates, and only promote to
-# production on pass**. h5i-db makes each step defensible - the raw broken
-# delivery stays on record as a staging version (evidence, not embarrassment),
-# the fix goes through a previewable plan/apply mutation with before/after
-# samples, and a database-level policy makes direct destructive writes
-# *impossible to do casually*, for humans and pipeline agents alike.
+#
+# The pattern that prevents it is old ETL wisdom with a versioned twist. **Land
+# every delivery in a staging table, run gates, and promote to production only
+# on pass.**
+#
+# h5i-db makes each step defensible. The raw broken delivery stays on record as
+# a staging version, which is evidence rather than embarrassment. The fix goes
+# through a previewable plan/apply mutation with before and after samples. And a
+# database-level policy makes direct destructive writes *impossible to do
+# casually*, for humans and pipeline agents alike.
 
 # %%
 import numpy as np
@@ -22,16 +25,30 @@ import cookbook_utils as cu
 db = h5i_db.Database(cu.fresh_db("prod_dq"), create=True)
 
 # %% [markdown]
-# ## 1. Production history and a staging table
+# ## 1. The data
 #
-# A 20-name universe with ~1 year of daily closes in `prices_prod`. The
-# vendor's next file will land in `vendor_staging` - same schema, separate
-# table, so nothing unvetted ever touches production.
+# `cu.make_daily_prices` gives a 20-name universe with about a year of daily
+# closes, one row per symbol per session.
+#
+# | column | type | meaning |
+# | --- | --- | --- |
+# | `ts` | `timestamp[us, tz=UTC]` | session close, 20:00 UTC |
+# | `symbol` | `string` | ticker, `STK000` … `STK019` |
+# | `open`, `high`, `low`, `close` | `float64` | session prices |
+# | `volume` | `int64` | shares traded |
 
 # %%
 UNIVERSE = [f"STK{i:03d}" for i in range(20)]
 panel = cu.make_daily_prices(symbols=UNIVERSE, days=250).to_pandas()
+print(f"{len(panel):,} rows x {panel.shape[1]} columns, {len(UNIVERSE)} symbols")
+panel.head()
 
+# %% [markdown]
+# All sessions but the last become production history in `prices_prod`. The
+# vendor's next file will land in `vendor_staging`: same schema, separate table,
+# so nothing unvetted ever touches production.
+
+# %%
 sessions = np.sort(panel["ts"].unique())
 delivery_ts = sessions[-1]                      # today's file
 history = panel[panel["ts"] < delivery_ts]
@@ -61,13 +78,15 @@ db.table("prices_prod").select(rows=count_star(), sessions=col("ts").n_unique())
 # ## 2. Lock the database down first
 #
 # `set_policy` flips database-wide flags gating the *direct* mutation paths.
-# With `direct_write` / `direct_delete` off, restatements and deletions must
-# go through the plan/apply flow - previewed, noted, and conflict-checked -
-# while plain `append` (the only thing an ingest job should ever do) stays
-# open. This is the guardrail you want when pipelines are driven by cron jobs
-# or LLM agents: the destructive path simply isn't callable. (In the Python
-# API deletes are plan-only already; the flag also covers CLI and future
-# direct paths.)
+#
+# With `direct_write` and `direct_delete` off, restatements and deletions must go
+# through the plan/apply flow, which is previewed, noted and conflict-checked.
+# Plain `append`, the only thing an ingest job should ever do, stays open.
+#
+# This is the guardrail you want when pipelines are driven by cron jobs or LLM
+# agents: the destructive path simply is not callable. In the Python API deletes
+# are plan-only already, and the flag also covers the CLI and future direct
+# paths.
 
 # %%
 db.set_policy(direct_write=False, direct_delete=False)
@@ -75,10 +94,12 @@ db.set_policy(direct_write=False, direct_delete=False)
 # %% [markdown]
 # ## 3. Today's delivery is broken four ways
 #
-# The vendor file: half the universe missing, one negative price, one null,
-# and two duplicated rows. We land it in staging as-is - the raw file becomes
-# an immutable staging version, which is exactly what you want to show the
-# vendor when you open the ticket.
+# The vendor file has half the universe missing, one negative price, one null,
+# and two duplicated rows.
+#
+# We land it in staging as-is. The raw file becomes an immutable staging
+# version, which is exactly what you want to show the vendor when you open the
+# ticket.
 
 # %%
 corrupt = delivery_true[delivery_true["symbol"].isin(UNIVERSE[:10])].copy()
@@ -97,11 +118,13 @@ corrupt[cols].head(8)
 # %% [markdown]
 # ## 4. The gate: five checks, all SQL on staging
 #
-# Completeness against the expected universe, null and price sanity,
-# duplicate detection, and a row-count check against the trailing 20-session
-# average in production (a cheap but effective "did the vendor send half a
-# file" alarm). Every check reads the *staging table's current version* - the
-# gate result is reproducible against that version forever.
+# Five checks: completeness against the expected universe, null sanity, price
+# sanity, duplicate detection, and a row count against the trailing 20-session
+# average in production. That last one is a cheap but effective "did the vendor
+# send half a file" alarm.
+#
+# Every check reads the *staging table's current version*, so the gate result is
+# reproducible against that version forever.
 
 # %%
 def run_gate(day: str) -> pd.DataFrame:
@@ -147,8 +170,8 @@ gate_raw
 # %% [markdown]
 # ## 5. The shortcut that policy makes impossible
 #
-# The tempting fix: "just overwrite staging with the corrected file". With
-# `direct_write` off, that path raises `PolicyError` - the error's hint
+# The tempting fix is "just overwrite staging with the corrected file". With
+# `direct_write` off, that path raises `PolicyError`, and the error's hint
 # points at the sanctioned flow. Nobody fixes production data at 2am with an
 # unreviewed `write()` again.
 
@@ -165,11 +188,14 @@ except h5i_db.PolicyError as e:
 # ## 6. Remediation the sanctioned way: plan, inspect, apply
 #
 # `plan_replace_range` stages the corrected delivery over the broken day's
-# window (range bounds are raw **microseconds** in the time column's unit).
-# The plan is not a commit: it carries a summary and before/after samples you
-# can eyeball - or attach to the change ticket - before `apply()` publishes
-# it atomically. Applying is conflict-checked: if anyone commits to staging
-# in between, apply fails instead of clobbering.
+# window. Range bounds are raw **microseconds**, in the time column's unit.
+#
+# The plan is not a commit. It carries a summary and before/after samples you
+# can eyeball, or attach to the change ticket, before `apply()` publishes it
+# atomically.
+#
+# Applying is conflict-checked. If anyone commits to staging in between, apply
+# fails instead of clobbering.
 
 # %%
 day_start_us = int(pd.Timestamp(delivery_ts).value // 1000)
@@ -192,10 +218,11 @@ result = plan.apply()
 # %% [markdown]
 # ## 7. Re-run the gate, then promote
 #
-# The gate now passes, so the delivery-day rows are appended to production -
-# with a note tying the promotion to the gated delivery. Both tables' version
-# histories together tell the whole story: raw broken file, previewed fix,
-# gated promotion.
+# The gate now passes, so the delivery-day rows are appended to production, with
+# a note tying the promotion to the gated delivery.
+#
+# Both tables' version histories together tell the whole story: raw broken file,
+# previewed fix, gated promotion.
 
 # %%
 gate_fixed = run_gate(day)
@@ -248,17 +275,17 @@ fig.tight_layout()
 # %% [markdown]
 # ## Takeaways
 #
-# - Staging + gate + promote is the pattern; h5i-db adds the receipts. The
-#   broken raw file, the previewed fix, and the promotion are all *versions
-#   with notes* - the incident report writes itself from `versions()`.
+# - Staging, gate, promote is the pattern, and h5i-db adds the receipts. The
+#   broken raw file, the previewed fix and the promotion are all *versions with
+#   notes*, so the incident report writes itself from `versions()`.
 # - `set_policy(direct_write=False, direct_delete=False)` turns "please don't
 #   hot-fix production" from a convention into a `PolicyError`. Appends stay
 #   open, so ingest keeps flowing.
-# - `plan_replace_range` gives you a dry-run with `summary` and
-#   before/after samples, then an atomic, conflict-checked `apply()`.
-#   Remember: plan range bounds are raw microseconds.
-# - The row-count-vs-trailing-history check is the cheapest gate with the
-#   highest catch rate - half-files and double-sends are far more common than
+# - `plan_replace_range` gives you a dry run with `summary` and before/after
+#   samples, then an atomic, conflict-checked `apply()`. Remember that plan
+#   range bounds are raw microseconds.
+# - The row-count-versus-trailing-history check is the cheapest gate with the
+#   highest catch rate. Half-files and double-sends are far more common than
 #   subtle corruption.
 
 # %%

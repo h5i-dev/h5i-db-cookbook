@@ -1,18 +1,20 @@
 # %% [markdown]
 # # The DataFrame builder: queries as Python objects
 #
-# `db.table(...)` starts a **lazy** query you assemble with method calls
-# instead of a SQL string. Nothing runs until a terminal call like
-# `.collect()`. It is a compiler, not a second engine: every verb lowers to
-# SQL that goes through `db.sql()`, so a built query sees the same session,
-# the same table functions and the same version pins as the string you would
-# have written - and `.sql()` shows you exactly what it produced.
+# `db.table(...)` starts a **lazy** query that you assemble with method calls
+# instead of a SQL string. Nothing runs until a terminal call such as
+# `.collect()`.
+#
+# It is a compiler, not a second engine. Every verb lowers to SQL that goes
+# through `db.sql()`, so a built query sees the same session, the same table
+# functions and the same version pins as the string you would have written by
+# hand. `.sql()` shows you exactly what it produced.
 #
 # The payoff for a research desk is generated queries. A factor library that
-# sweeps windows and columns in a loop builds SQL with f-strings today, which
-# is where quoting bugs and `'` injection live. Here the identifiers are
-# quoted at one site and a partially-built pipeline is an ordinary Python
-# value you can pass around, extend and reuse.
+# sweeps windows and columns in a loop builds SQL with f-strings today, and that
+# is where quoting bugs and `'` injection live. Here the identifiers are quoted
+# at one site, and a partially-built pipeline is an ordinary Python value you
+# can pass around, extend and reuse.
 
 # %%
 import h5i_db
@@ -22,32 +24,61 @@ import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("00_dataframe_builder"), create=True)
 
+# %% [markdown]
+# ## The data
+#
+# Two tables, because the builder's verbs split along the same line. Tick-level
+# `trades` from `cu.make_trades` exercise bucketing and aggregation.
+#
+# | column | type | meaning |
+# | --- | --- | --- |
+# | `ts` | `timestamp[us, tz=UTC]` | trade timestamp, ascending |
+# | `symbol` | `string` | ticker |
+# | `price` | `float64` | trade price |
+# | `size` | `int64` | shares traded |
+# | `exchange` | `string` | reporting venue |
+# | `side` | `string` | `B` buyer-initiated, `S` seller-initiated |
+
+# %%
 trades = cu.make_trades(symbols=["AAPL", "MSFT", "NVDA"], days=3, trades_per_day=20_000)
+print(f"trades: {trades.num_rows:,} rows x {trades.num_columns} columns")
+trades.to_pandas().head()
+
+# %% [markdown]
+# A daily OHLCV panel from `cu.make_daily_prices`, 50 names over 500 sessions,
+# exercises the window and cross-sectional verbs: `ts`, `symbol`, `open`,
+# `high`, `low`, `close`, `volume`.
+
+# %%
+prices = cu.make_daily_prices(days=500)  # 50 names x 500 sessions
+print(f"prices: {prices.num_rows:,} rows x {prices.num_columns} columns")
+prices.to_pandas().head()
+
+# %%
 db.create_table("trades", trades.schema, time_column="ts", sort_key=["ts", "symbol"])
 db.append("trades", trades)
 
-prices = cu.make_daily_prices(days=500)  # 50 names x 500 sessions
 db.create_table("prices", prices.schema, time_column="ts", sort_key=["ts", "symbol"])
 db.append("prices", prices)
 
-print(f"trades: {len(trades):,} rows   prices: {len(prices):,} rows")
+db.tables()
 
 # %% [markdown]
 # ## 1. A frame is a query that has not run
 #
 # `db.table("trades")` is the whole table as a starting point. Verbs return
-# **new** frames, so nothing is mutated and a partial pipeline is safe to
-# reuse. `.sql()` renders it; `.collect()` runs it.
+# **new** frames, so nothing is mutated and a partial pipeline is safe to reuse.
+# `.sql()` renders it and `.collect()` runs it.
 
 # %%
 liquid = db.table("trades").filter(col("symbol").is_in(["AAPL", "NVDA"]))
 print(liquid.sql())
 
 # %% [markdown]
-# The idiomatic OHLCV rollup, built. `group_by(...).agg(...)` projects the
-# keys alongside the aggregates, and `.first("ts")` / `.last("ts")` are the
-# `first_value(x ORDER BY ts)` idiom that gives you bar opens and closes
-# without a self-join.
+# Here is the idiomatic OHLCV rollup, built. `group_by(...).agg(...)` projects
+# the keys alongside the aggregates. `.first("ts")` and `.last("ts")` are the
+# `first_value(x ORDER BY ts)` idiom, which gives bar opens and closes without a
+# self-join.
 
 # %%
 bars = (
@@ -71,12 +102,12 @@ bars.to_pandas().head(6)
 # %% [markdown]
 # ## 2. Expressions
 #
-# `col(name)` is a column, `lit(value)` a constant, and arithmetic and
-# comparisons build up from there. Two traps worth meeting early:
+# `col(name)` is a column and `lit(value)` a constant. Arithmetic and
+# comparisons build up from there. Two traps are worth meeting early:
 #
-# - Python cannot overload `and` / `or` / `not`, so boolean logic uses
-#   `&`, `|`, `~`. They bind *tighter* than comparisons, so each comparison
-#   needs its own parentheses.
+# - Python cannot overload `and`, `or` and `not`, so boolean logic uses `&`,
+#   `|` and `~`. Those bind *tighter* than comparisons, so each comparison needs
+#   its own parentheses.
 # - Expressions keep **SQL** semantics, not Python's. `/` between two integer
 #   columns is integer division. Cast when you mean true division.
 
@@ -99,9 +130,9 @@ print(signed.sql())
 signed.to_pandas().head(4)
 
 # %% [markdown]
-# Identifiers are always quoted, so case survives (`col("Symbol")` finds a
-# field named `Symbol`, which bare SQL would fold to lowercase), and a string
-# literal is always a string - never syntax:
+# Identifiers are always quoted, so case survives: `col("Symbol")` finds a field
+# named `Symbol`, which bare SQL would fold to lowercase. And a string literal
+# is always a string, never syntax:
 
 # %%
 print(db.table("trades").filter(col("symbol") == "'; DROP TABLE trades; --").sql())
@@ -109,12 +140,13 @@ print(db.table("trades").filter(col("symbol") == "'; DROP TABLE trades; --").sql
 # %% [markdown]
 # ## 3. How a pipeline becomes SQL
 #
-# Most pipelines compile to one flat `SELECT`: independent `with_columns`
-# calls coalesce, and filtering a *base* column stays in the same `WHERE`.
-# A stage that reads a column an earlier stage **computed** gets its own
-# level, because SQL resolves `WHERE` against the `FROM`, not against sibling
+# Most pipelines compile to one flat `SELECT`. Independent `with_columns` calls
+# coalesce, and filtering a *base* column stays in the same `WHERE`.
+#
+# A stage that reads a column an earlier stage **computed** gets its own level,
+# because SQL resolves `WHERE` against the `FROM` rather than against sibling
 # entries in the select list. Aggregation, `LIMIT` and `DISTINCT` also close a
-# level, since whatever follows acts on their output.
+# level, since whatever follows them acts on their output.
 
 # %%
 movers = (
@@ -130,12 +162,13 @@ print(movers.sql())
 movers.to_pandas()
 
 # %% [markdown]
-# Knowing *where* levels close is the one thing worth internalizing, because
-# it decides what the next stage can see. While the pipeline stays flat, a
-# verb still reaches the base table - `select("ts", "symbol").sort("close")`
-# resolves fine, because SQL's `ORDER BY` reads the `FROM`, not the select
-# list. Once an aggregate closes the level, that column is genuinely gone and
-# the engine says so:
+# Knowing *where* levels close is the one thing worth internalizing, because it
+# decides what the next stage can see.
+#
+# While the pipeline stays flat, a verb still reaches the base table.
+# `select("ts", "symbol").sort("close")` resolves fine, because SQL's
+# `ORDER BY` reads the `FROM`, not the select list. Once an aggregate closes the
+# level, that column is genuinely gone and the engine says so:
 
 # %%
 try:
@@ -146,9 +179,9 @@ except h5i_db.H5iError as e:
 # %% [markdown]
 # ## 4. The payoff: queries you generate
 #
-# This is where the builder earns its place. A sweep over several lookbacks
-# is a Python loop over frames, not string surgery - and each frame is a
-# value you can hold, name and reuse. Here: the gap between price and its own
+# This is where the builder earns its place. A sweep over several lookbacks is a
+# Python loop over frames rather than string surgery, and each frame is a value
+# you can hold, name and reuse. Below: the gap between price and its own
 # trailing mean, at three windows.
 #
 # Rolling methods take a `window` and an `order_by`, and optionally a
@@ -173,8 +206,8 @@ ma_gap.select("ts", "symbol", *[f"gap_{n}d" for n in WINDOWS]).sort(["ts", "symb
 
 # %% [markdown]
 # Cross-sectional operators rank a value against its peers *at the same
-# instant*, so they take the bucket to compare within. Combining a few
-# z-scored signals into one composite is the whole shape of a factor build:
+# instant*, so they take the bucket to compare within. Combining a few z-scored
+# signals into one composite is the whole shape of a factor build:
 
 # %%
 combo = (
@@ -194,8 +227,9 @@ combo.to_pandas().head(5)
 #
 # A read point passes straight to `db.table()` and lowers to `h5i()`, so a
 # pinned builder query is bound at the source exactly like hand-written SQL.
-# `.join()` renders both sides as subqueries aliased `l` and `r`; those
-# aliases are the contract for reaching a specific side. That makes the
+#
+# `.join()` renders both sides as subqueries aliased `l` and `r`, and those
+# aliases are the contract for reaching a specific side. Together they make the
 # "same query across N versions" comparison a function call:
 
 # %%
@@ -220,8 +254,8 @@ drift.sort("symbol").to_pandas()
 # %% [markdown]
 # `.join_asof()` lowers to the `asof_join` table function. That function takes
 # *table names* and reads both at latest, so the builder refuses a side that
-# already has verbs applied or a pin - rather than silently ignoring it.
-# Filter after the join.
+# already has verbs applied or a pin, rather than silently ignoring it. Filter
+# after the join instead.
 
 # %%
 tape, quotes = cu.make_trades_and_quotes(days=2)  # shared base prices
@@ -249,9 +283,9 @@ tq.to_pandas().head(4)
 # %% [markdown]
 # ## 6. The escape hatch, and the door back to SQL
 #
-# Full SQL coverage through verbs is deliberately not a goal. `sql_expr()`
-# drops a raw fragment anywhere an expression is accepted - its text goes in
-# verbatim, so it is the one place quoting is yours to get right.
+# Full SQL coverage through verbs is deliberately not a goal. `sql_expr()` drops
+# a raw fragment anywhere an expression is accepted. Its text goes in verbatim,
+# which makes it the one place where quoting is yours to get right.
 
 # %%
 tails = (
@@ -269,9 +303,9 @@ tails.to_pandas()
 # %% [markdown]
 # The escape hatch you will reach for most is `lag`. There is no `.lag()`
 # method, but a `sql_expr` fragment is windowable, so it takes `.over()` like
-# any aggregate - and that covers `lag`, `lead`, `row_number` and the rest of
-# the SQL window catalogue. Daily returns, the single most common shape in
-# this cookbook:
+# any aggregate. That covers `lag`, `lead`, `row_number` and the rest of the SQL
+# window catalogue. Daily returns are the single most common shape in this
+# cookbook:
 
 # %%
 PREV_CLOSE = sql_expr("lag(close)").over(partition_by="symbol", order_by="ts")
@@ -289,21 +323,21 @@ print(rets.sql())
 rets.sort(["ts", "symbol"]).to_pandas().head(4)
 
 # %% [markdown]
-# Note the two-step `with_columns`: `ret` reads `prev_close`, which the stage
+# Note the two-step `with_columns`. `ret` reads `prev_close`, which the stage
 # before it computed, so the builder closes a level rather than emit SQL that
-# would not resolve. Binding the fragment to a Python name (`PREV_CLOSE`)
-# once and reusing it is the habit that keeps a factor library honest.
+# would not resolve. Binding the fragment to a Python name once, as `PREV_CLOSE`
+# here, and reusing it is the habit that keeps a factor library honest.
 
 # %% [markdown]
-# And when a pipeline outgrows the builder, `.sql()` hands you the query to
-# paste into `db.sql()` and keep going from there. The two surfaces are one
-# system with a door in the middle, and the generated SQL is deterministic -
+# When a pipeline outgrows the builder, `.sql()` hands you the query to paste
+# into `db.sql()` and keep going from there. The two surfaces are one system
+# with a door in the middle, and the generated SQL is deterministic, so it is
 # safe to snapshot-test or diff.
 #
 # Some things stay in `db.sql()` because there is no verb for them and the
 # string is genuinely clearer: `UNION ALL`, deep multi-CTE chains, scalar
-# subqueries, and the table functions `gapfill` / `resample` / `tail`.
-# Stacking two read points into one labelled result is the everyday example:
+# subqueries, and the table functions `gapfill`, `resample` and `tail`. Stacking
+# two read points into one labelled result is the everyday example:
 
 # %%
 db.sql(
@@ -317,18 +351,18 @@ db.sql(
 # %% [markdown]
 # ## Takeaways
 #
-# - `db.table(...)` is a lazy query; verbs return new frames and nothing runs
-#   until `.collect()` / `.to_pandas()`. `.sql()` shows the compiled SQL.
-# - The builder is a compiler over `db.sql()`, not a second engine - same
+# - `db.table(...)` is a lazy query. Verbs return new frames and nothing runs
+#   until `.collect()` or `.to_pandas()`. `.sql()` shows the compiled SQL.
+# - The builder is a compiler over `db.sql()`, not a second engine: same
 #   session, same table functions, same `h5i()` version pins.
-# - Use `&`, `|`, `~` for boolean logic, and remember expressions carry SQL
-#   semantics: integer `/` truncates.
-# - Reach for it when queries are **generated** - a sweep over windows or
-#   columns in a loop - where f-string SQL means quoting bugs. For a query you
+# - Use `&`, `|` and `~` for boolean logic, and remember that expressions carry
+#   SQL semantics, so integer `/` truncates.
+# - Reach for it when queries are **generated**, such as a sweep over windows or
+#   columns in a loop, where f-string SQL means quoting bugs. For a query you
 #   write once, plain SQL is often shorter.
 # - `rolling_*` and `cs_*` methods carry a real `PARTITION BY`, unlike the
 #   `rolling_avg` SQL sugar, which is a global trailing row window.
-# - `sql_expr()` is the escape hatch and `.sql()` is the door back; neither
+# - `sql_expr()` is the escape hatch and `.sql()` is the door back. Neither
 #   surface is second-class.
 
 # %%

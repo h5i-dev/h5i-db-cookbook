@@ -1,14 +1,19 @@
 # %% [markdown]
-# # 取り込みのパターン: 5つの入力元を1つのテーブルへ
+# # 取り込みのパターン: 5つの入口から1つのテーブルへ
 #
-# 現場のデータが1か所から来ることはまずありません。ティックフィードは Arrow バッチを
-# 渡してきますし、リサーチ用のノートブックは pandas か polars の中にあり、ベンダーは
-# Parquet を置いていき、古い業務プロセスはいまだに CSV をメールで送ってきます。h5i-db の
-# 取り込み口は意図的に小さく、`append`（フィードを伸ばす）と `write`（中身を差し替える）
-# の2つだけで、どちらも Arrow の形をしたものなら受け取ります。このレシピでは、連続する
-# 5営業日ぶんを5種類の入力元から1つの `trades` テーブルに取り込み、そのうえで取り込みの
-# 運用面を扱います。`write` と `append` の違い、`expected_version` による楽観ロック、
-# そしてコミットをまとめてから `compact` する理由です。
+# データが1か所から届くデスクはありません。ティックフィードは Arrow のバッチを寄こし、
+# リサーチのノートブックは pandas や polars に住み、ベンダーは Parquet を置いていき、
+# どこかの古いプロセスはいまだに CSV をメールで送ってきます。
+#
+# h5i-db の取り込み面は意図的に小さくしてあります。`append` がフィードを伸ばし、`write` が
+# 中身を置き換える。どちらも Arrow の形をしたものなら何でも受け取ります。
+#
+# このレシピで進めるのは次の4つです。
+#
+# 1. 連続する5セッションを5つの別々のソースから1つの `trades` テーブルに取り込む
+# 2. `write` と `append` の意味論を対比する
+# 3. 楽観ロックで、同時に走るローダを安全にする
+# 4. コミットをまとめ、残ったセグメントを圧縮する
 
 # %%
 import shutil
@@ -26,6 +31,46 @@ import cookbook_utils as cu
 
 db = h5i_db.Database(cu.fresh_db("00_ingestion"), create=True)
 
+# %% [markdown]
+# ## データ
+#
+# `cu.make_trades` が返す、連続11セッションぶんのティックデータです。1行が1約定です。
+#
+# | 列 | 型 | 意味 |
+# | --- | --- | --- |
+# | `ts` | `timestamp[us, tz=UTC]` | 約定時刻、昇順 |
+# | `symbol` | `string` | 銘柄コード |
+# | `price` | `float64` | 約定価格 |
+# | `size` | `int64` | 約定株数 |
+# | `exchange` | `string` | 報告した取引所 |
+# | `side` | `string` | `B` は買い主導、`S` は売り主導 |
+
+# %%
+tape = cu.make_trades(days=11, trades_per_day=4_000, start="2026-06-01", seed=7)
+print(f"{tape.num_rows:,} rows x {tape.num_columns} columns")
+tape.to_pandas().head()
+
+# %% [markdown]
+# これを日ごとのバッチに切り分け、「1回の配信」が時刻順に届くようにします。`append` は
+# どのバッチも、テーブルに保存済みの最大タイムスタンプ以降から始まることを要求します。
+# フィードの意味論とは、実務上はそういうことです。ベンダーの受け渡し場所の代わりに、
+# `data/dbs` の下にステージング用のディレクトリを1つ用意します。
+
+# %%
+dates = tape["ts"].to_pandas().dt.date
+sessions = sorted(dates.unique())
+by_day = {d: tape.filter(pa.array((dates == d).to_numpy())) for d in sessions}
+print(f"{len(sessions)} sessions, {len(tape):,} trades:", sessions[0], "→", sessions[-1])
+
+staging = Path("data/dbs/00_ingestion_staging")
+if staging.exists():
+    shutil.rmtree(staging)
+staging.mkdir(parents=True)
+
+# %% [markdown]
+# 行き先は1つのテーブルです。以下のソースはすべてここに着地します。
+
+# %%
 SCHEMA = pa.schema(
     [
         pa.field("ts", pa.timestamp("us", tz="UTC"), nullable=False),
@@ -39,42 +84,23 @@ SCHEMA = pa.schema(
 db.create_table("trades", SCHEMA, time_column="ts", sort_key=["ts", "symbol"])
 
 # %% [markdown]
-# 11セッションぶんの連続したテープを、1日ずつのバッチに切り分けます。こうすると各
-# 「納品」が時刻順に届きます。`append` はどのバッチもテーブルの保存済み最大タイム
-# スタンプ以降から始まることを求めるためです（フィードとしての意味論）。ベンダーの
-# 受け渡し場所の代わりに、`data/dbs` の下のステージング用ディレクトリを使います。
-
-# %%
-tape = cu.make_trades(days=11, trades_per_day=4_000, start="2026-06-01", seed=7)
-
-dates = tape["ts"].to_pandas().dt.date
-sessions = sorted(dates.unique())
-by_day = {d: tape.filter(pa.array((dates == d).to_numpy())) for d in sessions}
-print(f"{len(sessions)} sessions, {len(tape):,} trades:", sessions[0], "→", sessions[-1])
-
-staging = Path("data/dbs/00_ingestion_staging")
-if staging.exists():
-    shutil.rmtree(staging)
-staging.mkdir(parents=True)
-
-# %% [markdown]
-# ## 1. pyarrow Table から
+# ## 1. pyarrow の Table から
 #
-# 変換を挟まないネイティブの経路です。`append` は必ず**コミット辞書**を返します。中身は
-# 新しいバージョン番号（`sequence`）と、コミット後の総行数・総セグメント数です。ローダーの
-# ログに残しておきましょう。納品とバージョンを結びつける受領証になります。
+# 変換の要らないネイティブの経路です。`append` はどれも**コミット辞書**を返します。新しい
+# バージョン番号（`sequence`）と、コミット後の行数・セグメント数が入っています。ローダでは
+# これをログに残してください。配信とバージョンを結びつける受領証です。
 
 # %%
 commit = db.append("trades", by_day[sessions[0]], note="day 1: arrow feed")
 commit
 
 # %% [markdown]
-# ## 2. pandas DataFrame から
+# ## 2. pandas の DataFrame から
 #
-# 重い仕事は `pa.Table.from_pandas` がやってくれますが、`schema=` は必ず渡してください。
-# pandas のバージョンによっては datetime がナノ秒（テーブル側はマイクロ秒）のまま往復し、
-# 厳格な append がその不一致を拒みます。目的のスキーマを渡せば、変換のついでにキャストが
-# かかります。
+# 重い仕事は `pa.Table.from_pandas` がやってくれます。それに加えて `schema=` を必ず渡して
+# ください。pandas のバージョンによっては、日時がテーブルのマイクロ秒ではなくナノ秒として
+# 往復してしまい、厳格な append がその不一致を拒否します。目的のスキーマを渡しておけば、
+# 変換のついでにキャストされます。
 
 # %%
 df = by_day[sessions[1]].to_pandas()  # pretend this came from research code
@@ -86,12 +112,12 @@ commit = db.append(
 {k: commit[k] for k in ("sequence", "rows_total", "segments_total")}
 
 # %% [markdown]
-# ## 3. polars DataFrame から
+# ## 3. polars の DataFrame から
 #
-# Polars は Arrow をそのまま話しますが、1つだけ癖があります。`to_arrow()` が出すのは
-# `large_string` の列で、厳格な append はこれをスキーマ不一致として拒みます。
-# `.cast(SCHEMA)` はメタデータ層の安い修正なので、polars から h5i-db へ渡す境界では
-# 習慣にしてしまうのがよいでしょう。
+# polars は Arrow をそのまま話しますが、1つだけ癖があります。`to_arrow()` が吐くのは
+# `large_string` の列で、厳格な append はこれをスキーマ不一致として弾きます。`.cast(SCHEMA)`
+# ならメタデータ層で片付くので、コストはかかりません。polars から h5i-db へ渡す境界では、
+# これを習慣にしてください。
 
 # %%
 pldf = pl.from_arrow(by_day[sessions[2]])  # pretend this came from a polars pipeline
@@ -101,9 +127,9 @@ commit = db.append("trades", pldf.to_arrow().cast(SCHEMA), note="day 3: polars")
 # %% [markdown]
 # ## 4. Parquet ファイルから
 #
-# Parquet は型をそのまま保つので、ベンダーが置いていった Parquet は読んで append する
-# だけです。（行の順序が怪しいベンダーなら、append の前にソートしてください。どちらに
-# しても厳格な append が教えてくれます。）
+# Parquet は型をそのまま保つので、ベンダーが置いていった Parquet は読んで append するだけ
+# です。行の並び順が怪しいベンダーなら、append の前にソートしておきましょう。どちらにせよ
+# 厳格な append が教えてくれます。
 
 # %%
 pq.write_table(by_day[sessions[3]], staging / "vendor_day4.parquet")
@@ -114,9 +140,9 @@ commit = db.append("trades", pq.read_table(staging / "vendor_day4.parquet"), not
 # %% [markdown]
 # ## 5. CSV から
 #
-# CSV は値を保ちますが型を落とします。素直に読むと、`ts` はパーサーが推測した何かに
-# なって返ってきます。`ConvertOptions(column_types=...)` で時刻列をパース時点で
-# `timestamp[us, tz=UTC]` に固定すれば、スキーマがぴたりと一致します。
+# CSV は値を保ちますが型を落とします。素直に読むと `ts` はパーサが推測した何かとして返って
+# きます。`ConvertOptions(column_types=...)` でパース時に時刻列を `timestamp[us, tz=UTC]` に
+# 固定すれば、スキーマは厳密に一致します。
 
 # %%
 pacsv.write_csv(by_day[sessions[4]], staging / "legacy_day5.csv")
@@ -130,16 +156,16 @@ commit = db.append("trades", from_csv, note="day 5: legacy csv")
 {k: commit[k] for k in ("sequence", "rows_total", "segments_total")}
 
 # %% [markdown]
-# ## `write` と `append` の違い
+# ## `write` と `append`
 #
 # - **`append`** はフィードを伸ばします。厳密に時刻順で、既存の行には触れません。テープの
-#   ように振る舞うものはこちらです。
-# - **`write`** はテーブルの中身を渡したデータで置き換えます。ただし*新しいバージョン*
-#   としてで、履歴はすべて残ります。ユニバースの構成銘柄、シンボルマッピング、リスク
-#   リミットのように、丸ごと言い直される参照データに使います。
+#   ように振る舞うものはすべてこちらです。
+# - **`write`** はテーブルの中身を、渡したデータで置き換えます。ただし*新しいバージョン*と
+#   してで、履歴はすべて残ります。まるごと言い直される参照データ、たとえばユニバースの構成、
+#   銘柄マッピング、リスクリミットはこちらです。
 #
-# どちらも破壊的ではありません。古いバージョンは `db.read(..., version=n)` と、SQL の
-# `h5i('table', n)` からいつでも読めます。
+# どちらも破壊的ではありません。古いバージョンは Python の `db.read(..., version=n)` からも、
+# SQL の `h5i('table', n)` からも読めるままです。
 
 # %%
 universe_schema = pa.schema(
@@ -165,11 +191,11 @@ print("v1   :", db.read("universe", version=1)["symbol"].to_pylist())
 # %% [markdown]
 # ## `expected_version` による楽観ロック
 #
-# 2つのローダーが1つのテーブルを共有していると、「いつでも好きに append する」やり方は
-# 納品を静かに混ぜてしまいます。`append(..., expected_version=n)` は compare-and-swap
-# です。テーブルの先頭がまだバージョン `n` のときだけコミットが着地し、そうでなければ
-# `ConflictError` が上がります。`retryable=True` と、復旧手順を書いたヒントが付いている
-# はずです。リトライは機械的で、先頭を読み直してもう一度 append するだけです。
+# 1つのテーブルを2つのローダが共有していると、「いつでも好きなものを append する」は配信を
+# 静かに混ぜ込みます。`append(..., expected_version=n)` はコミットを compare-and-swap に
+# 変えます。テーブルの先頭がまだバージョン `n` のときだけ着地するのです。そうでなければ
+# `ConflictError` が返り、`retryable=True` と復旧手順を書いたヒントが付いてきます。リトライ
+# 自体は機械的です。先頭を読み直して、もう一度 append するだけです。
 
 # %%
 day6 = by_day[sessions[5]]
@@ -186,15 +212,15 @@ commit = db.append("trades", day6, expected_version=head, note="day 6: CAS appen
 print(f"\nretried against v{head} -> committed v{commit['sequence']}")
 
 # %% [markdown]
-# ## バッチ化とコンパクション
+# ## バッチ化と圧縮
 #
-# コミットのたびにマニフェストが1つと、少なくとも1つのセグメントが書かれます。だから
-# コミットは*まとまり*で打ってください（1日ぶん、1時間ぶん、数千行ぶん）。1行ずつは
-# 禁物です。ただ、1日サイズのコミットでも小さなセグメントは溜まっていき、クエリの
-# プランニングはそのすべてに触れます。下の「日次ループ → compact」のパターンが通常の
-# リズムです。平日は小さな append コミットを重ね、`compact` でセグメントを1つにまとめます。
-# コンパクション自体もただのコミットで、データは同じ、セグメントは減り、履歴は丸ごと
-# 残ります。
+# コミット1件ごとにマニフェストと最低1つのセグメントが書かれます。だから*バッチ*でコミット
+# してください。1日ぶん、1時間ぶん、数千行ぶん。1行ずつは絶対にやめましょう。
+#
+# 1日単位のコミットでも小さなセグメントは溜まりますし、クエリの計画はその全部に触ります。
+# 下のループが普通のリズムです。平日のあいだは小さな append コミットを重ね、最後に `compact`
+# を1回かけてセグメントをまとめます。圧縮もそれ自体がただのコミットで、同じデータを少ない
+# セグメントで持ち、履歴はすべて残ります。
 
 # %%
 for d in sessions[6:]:
@@ -229,17 +255,17 @@ print(f"compacted: {before['segments']} segments -> {commit['segments_total']}, 
 # %% [markdown]
 # ## まとめ
 #
-# - Arrow の形をしたものはそのまま append できます。境界でつまずくのは、pandas の
-#   ナノ秒（`from_pandas(schema=...)`）、polars の `large_string`（`.cast(schema)`）、
-#   そして型を忘れる CSV（`ConvertOptions`）の3つです。
-# - `append` はフィードを伸ばす操作（厳密に時刻順）、`write` は中身を新しいバージョンとして
-#   言い直す操作。どちらも履歴を壊しません。
-# - コミット辞書（`sequence`、`rows_total`、`segments_total`）は取り込みの受領証です。
-#   ログに残しましょう。
-# - `expected_version` は append を compare-and-swap に変えます。`ConflictError`
-#   （リトライ可）が出たら、先頭を読み直してもう一度 append します。
-# - コミットはまとめて打ち、小さな append が続いたあとに `compact` します。コンパクションも
-#   ただのバージョンで、履歴に触れずセグメントだけを併合します。
+# - Arrow の形をしたものはそのまま append できます。境界で引っかかるのは pandas のナノ秒
+#   （`from_pandas(schema=...)`）、polars の `large_string`（`.cast(schema)`）、CSV の型忘れ
+#   （`ConvertOptions`）の3つです。
+# - `append` は厳密な時刻順でフィードを伸ばし、`write` は中身をまるごと新しいバージョンとして
+#   言い直します。どちらも履歴を壊しません。
+# - コミット辞書（`sequence`、`rows_total`、`segments_total`）が取り込みの受領証です。ログに
+#   残してください。
+# - `expected_version` は append を compare-and-swap に変えます。リトライ可能な
+#   `ConflictError` が出たら、先頭を読み直して append し直します。
+# - コミットはまとめ、小さな append が続いたあとは `compact` をかけます。圧縮は履歴に触れず
+#   セグメントを併合するだけの、ごく普通のバージョンです。
 
 # %%
 db.close()
