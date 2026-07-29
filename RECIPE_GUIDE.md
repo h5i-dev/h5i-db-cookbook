@@ -224,6 +224,14 @@ Rows sharing a `book_deltas.event_index` are one atomic event and end where
 their own axis. `slippage_ticks` currently takes precedence over queue mode,
 so recipes should test those assumptions as separate scenarios.
 
+For external L2 data, pin two layers: hash the exact source Parquets, then
+create a named h5i-db snapshot after normalization. Preserve both event and
+arrival timestamps, count any clock repairs, and keep future resolution labels
+out of the feature table. Periodic full-book snapshots can test market-order
+execution and depth sensitivity, but cannot support exact queue-position
+claims between snapshots. Recipes 04/04 and 04/05 apply this contract to a
+bounded, non-commercial Kaggle Polymarket sample.
+
 ## DataFrame builder cheatsheet
 
 **Recipes are builder-first.** `db.table(...)` starts a lazy query you build
