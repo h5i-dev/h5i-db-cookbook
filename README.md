@@ -95,12 +95,20 @@ pure-SQL tour, and a handful of queries stay SQL where no verb exists
 | [10 Performance tuning](notebooks/03_risk_and_production/10_performance_tuning.ipynb) | Pruning, compaction, resource limits, batching, and why it's fast |
 | [11 arrival-delta](notebooks/03_risk_and_production/11_arrival_delta.ipynb) | Pricing hindsight: `arrival_delta` across a sweep, and the two ways it misleads |
 
+### 04 - Event-driven backtesting
+
+| Recipe | What you learn |
+|---|---|
+| [01 First event-driven run](notebooks/04_event_driven_backtesting/01_first_event_driven_run.ipynb) | Signals as order intent; pinned replay; fills, positions, and equity on a run fork |
+| [02 Execution realism](notebooks/04_event_driven_backtesting/02_execution_realism.ipynb) | Fees, slippage, latency, queue position, and implementation-shortfall sensitivity |
+| [03 Reproducible operations](notebooks/04_event_driven_backtesting/03_reproducible_backtest_operations.ipynb) | Stable snapshot reruns, late data, coverage gates, and audit manifests |
+
 ## Layout
 
 ```
 cookbook_utils/     shared synthetic-data generators + cached Yahoo downloader
-notebooks/          38 recipes × (.py source ⇄ executed .ipynb)
-notebooks_ja/       the same 38 recipes, prose translated to Japanese
+notebooks/          42 recipes × (.py source ⇄ executed .ipynb)
+notebooks_ja/       Japanese translations of the established recipe set
 scripts/            build tooling (py → executed ipynb)
 data/cache/         cached real market data (parquet)
 data/dbs/           databases created by recipes (disposable)

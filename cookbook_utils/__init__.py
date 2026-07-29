@@ -16,6 +16,12 @@ from .synthetic import (
 )
 from .real_data import fetch_daily, fetch_intraday, SP500_EXAMPLES
 from .dbs import db_path, fresh_db
+from .backtest_data import (
+    BOOK_DELTAS_SCHEMA,
+    INSTRUMENTS_SCHEMA,
+    TRADES_SCHEMA,
+    make_backtest_fixture,
+)
 
 __all__ = [
     "make_trades",
@@ -31,4 +37,8 @@ __all__ = [
     "SP500_EXAMPLES",
     "db_path",
     "fresh_db",
+    "BOOK_DELTAS_SCHEMA",
+    "INSTRUMENTS_SCHEMA",
+    "TRADES_SCHEMA",
+    "make_backtest_fixture",
 ]

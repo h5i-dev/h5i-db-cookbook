@@ -187,6 +187,43 @@ Exceptions: `H5iError` base with `.code`, `.retryable`, `.hint`; subclasses
 `ConflictError, NotFoundError, InvalidInputError, PolicyError, CorruptionError,
 LimitError, TimeoutError, StorageError`.
 
+## Event-driven backtest cheatsheet
+
+```python
+from h5i_db import backtest
+
+signals = backtest.signal_table([
+    {"ts": ts, "instrument_id": "market", "side": "buy", "quantity": 10.0},
+    {"ts": ts2, "instrument_id": "market", "side": "sell", "quantity": 10.0,
+     "kind": "limit", "limit_price": 0.55, "time_in_force": "gtc",
+     "tag": "exit", "reduce_only": True},
+])
+backtest.create_signal_table(db, "signals")
+db.append("signals", signals)
+
+report = backtest.run(
+    db, "run-001", starting_cash=10_000, signals="signals",
+    snapshot="approved-input",
+    fee_kind="proportional", fee_rate=0.001, maker_rebate=-0.0001,
+    latency_nanos=2_000_000, slippage_ticks=2,
+    equity_interval_nanos=1_000_000_000,
+    window=(start, end), minimum_coverage=0.95,
+)
+run_db = db.fork(report["fork"])
+run_db.read("bt_run")       # one-row run manifest
+run_db.read("bt_orders")    # every accepted/rejected/cancelled order
+run_db.read("bt_fills")     # authoritative executions
+run_db.read("bt_positions") # final portfolio state
+run_db.read("bt_equity")    # sampled equity curve
+```
+
+Market inputs use the canonical `instruments`, `book_deltas`, `trades`,
+`bars`, `funding`, and `resolutions` schemas. Replay order follows `ts_init`.
+Rows sharing a `book_deltas.event_index` are one atomic event and end where
+`is_last=True`. A named snapshot pins market data; signals are versioned on
+their own axis. `slippage_ticks` currently takes precedence over queue mode,
+so recipes should test those assumptions as separate scenarios.
+
 ## DataFrame builder cheatsheet
 
 **Recipes are builder-first.** `db.table(...)` starts a lazy query you build
