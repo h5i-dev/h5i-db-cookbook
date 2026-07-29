@@ -142,22 +142,58 @@ scenarios = {
     },
 }
 reports = {}
-for name, config in scenarios.items():
-    reports[name] = backtest.run(
-        db,
-        f"kaggle-{name}",
-        starting_cash=10_000.0,
-        signals="signals",
-        snapshot="approved-kaggle-cut",
-        equity_interval_nanos=60_000_000_000,
-        minimum_coverage=0.75,
-        **config,
+inspections = {}
+for name, assumptions in scenarios.items():
+    config = backtest.BacktestConfig(
+        run_id=f"kaggle-{name}",
+        portfolio=backtest.PortfolioConfig(starting_cash=10_000.0),
+        data=backtest.DataConfig(
+            signals="signals",
+            snapshot="approved-kaggle-cut",
+            minimum_coverage=0.75,
+        ),
+        execution=backtest.ExecutionConfig(
+            fee_kind="prediction_market",
+            fee_rate=assumptions["fee_rate"],
+            latency_nanos=assumptions["latency_nanos"],
+            slippage_ticks=assumptions["slippage_ticks"],
+        ),
+        risk=backtest.RiskConfig(
+            max_order_quantity=quantity,
+            max_abs_position=quantity,
+            max_open_orders=1,
+        ),
+        output=backtest.OutputConfig(
+            equity_interval_nanos=60_000_000_000,
+        ),
+        metadata={
+            "dataset": cu.KAGGLE_POLYMARKET_DATASET,
+            "scenario": name,
+            "signal": "causal depth imbalance",
+        },
     )
+    inspections[name] = backtest.inspect(db, config)
+    inspections[name].raise_for_errors()
+    reports[name] = backtest.execute(db, config)
 
 summary = pd.DataFrame(reports).T[
     ["fills", "commissions", "realized_pnl", "final_cash", "digest", "fork"]
 ]
 summary
+
+# %% [markdown]
+# Preflight classifies this source as snapshot L2 rather than tick-delta L2.
+# That fidelity statement is part of the result and prevents the notebook from
+# quietly making queue-position claims the source cannot support.
+
+# %%
+{
+    name: {
+        "fidelity": inspection.fidelity.value,
+        "warnings": [issue.message for issue in inspection.warnings],
+    }
+    for name, inspection in inspections.items()
+}
 
 # %% [markdown]
 # A valid comparison fully executes the same two tagged orders in every
@@ -168,6 +204,7 @@ summary
 # %%
 assert summary["fills"].ge(2).all()
 assert summary["digest"].nunique() == len(summary)
+assert reports["base"].verify()["verified"]
 
 fill_frames = []
 for scenario, report in reports.items():

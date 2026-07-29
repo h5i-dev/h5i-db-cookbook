@@ -107,6 +107,8 @@ pure-SQL tour, and a handful of queries stay SQL where no verb exists
 | [03 Reproducible operations](notebooks/04_event_driven_backtesting/03_reproducible_backtest_operations.ipynb) | Stable snapshot reruns, late data, coverage gates, and audit manifests |
 | [04 Kaggle Polymarket data contract](notebooks/04_event_driven_backtesting/04_kaggle_polymarket_data_contract.ipynb) | Bounded downloads, source hashes, timestamp repair, canonical L2 snapshots, and capability limits |
 | [05 Kaggle Polymarket replay](notebooks/04_event_driven_backtesting/05_kaggle_polymarket_replay.ipynb) | Causal features on real books, event-driven fills, and fee/latency/slippage sensitivity |
+| [06 Order lifecycle and risk](notebooks/04_event_driven_backtesting/06_order_lifecycle_and_risk.ipynb) | Typed preflight, submit/amend/cancel commands, native account limits, explanations, and semantic verification |
+| [07 Python strategy callbacks](notebooks/04_event_driven_backtesting/07_python_strategy_callbacks.ipynb) | Stateful strategies, timers, fill-driven actions, stable strategy identity, and callback rerun verification |
 
 ## Layout
 
