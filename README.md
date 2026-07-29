@@ -77,6 +77,7 @@ pure-SQL tour, and a handful of queries stay SQL where no verb exists
 | [08 Intraday seasonality](notebooks/02_alpha_research/08_intraday_seasonality.ipynb) | U-shaped volume/vol curves; time-of-day effects |
 | [09 Lead–lag analysis](notebooks/02_alpha_research/09_lead_lag.ipynb) | Cross-asset lead–lag with ASOF alignment |
 | [10 Portfolio rebalancing](notebooks/02_alpha_research/10_portfolio_rebalancing.ipynb) | Versioned holdings, turnover control, rebalance audit trail |
+| [11 Retrieval-augmented forecasting](notebooks/02_alpha_research/11_retrieval_augmented_forecasting.ipynb) | Embeddings as a column, `array_distance` top-k, and why time-series RAG leaks |
 
 ### 03 - Risk & production
 
@@ -98,8 +99,8 @@ pure-SQL tour, and a handful of queries stay SQL where no verb exists
 
 ```
 cookbook_utils/     shared synthetic-data generators + cached Yahoo downloader
-notebooks/          37 recipes × (.py source ⇄ executed .ipynb)
-notebooks_ja/       the same 37 recipes, prose translated to Japanese
+notebooks/          38 recipes × (.py source ⇄ executed .ipynb)
+notebooks_ja/       the same 38 recipes, prose translated to Japanese
 scripts/            build tooling (py → executed ipynb)
 data/cache/         cached real market data (parquet)
 data/dbs/           databases created by recipes (disposable)

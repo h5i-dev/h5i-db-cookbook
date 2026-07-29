@@ -59,6 +59,7 @@
 | [08 日中の季節性](02_alpha_research/08_intraday_seasonality.ipynb) | U字型の出来高・ボラ曲線、時刻効果 |
 | [09 リードラグ分析](02_alpha_research/09_lead_lag.ipynb) | ASOF で揃えたクロスアセットのリードラグ |
 | [10 ポートフォリオのリバランス](02_alpha_research/10_portfolio_rebalancing.ipynb) | バージョン付きの保有、回転率の管理、リバランスの監査証跡 |
+| [11 検索拡張予測](02_alpha_research/11_retrieval_augmented_forecasting.ipynb) | 埋め込みを列として持つ、`array_distance` の上位k件、時系列 RAG が漏れる理由 |
 
 ### 03 - リスクと本番運用
 
