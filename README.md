@@ -123,12 +123,14 @@ markets rather than a few thousand days.
 | [03 Favorite-longshot bias](notebooks/05_prediction_markets/03_favorite_longshot_bias.ipynb) | Hold-to-resolution returns by price bucket, both sides traded net of fees, threshold plateaus, and `sqrt(p(1-p))` vol scaling |
 | [04 Execution fidelity and depth](notebooks/05_prediction_markets/04_execution_fidelity_and_depth.ipynb) | Microprice and imbalance from snapshots, preflight refusing a queue claim, fill ratio against displayed depth, and a cost budget |
 | [05 Settlement and selection risk](notebooks/05_prediction_markets/05_settlement_and_selection_risk.ipynb) | Observability-gated settlement, why a time split fails on this panel, PBO, deflated Sharpe, and minimum track record length |
+| [06 Vendor data on-ramp](notebooks/05_prediction_markets/06_vendor_data_onramp.ipynb) | Vendor Parquet into canonical tables: market specs, layouts as data, content-addressed re-ingest, coverage, and the CLI |
+| [07 The whole loop, once](notebooks/05_prediction_markets/07_end_to_end_workflow.ipynb) | Ingest to decision: pin, strategy pack, walk-forward with a shortlist holdout, basket report, Brier advantage, deflated Sharpe, verify |
 
 ## Layout
 
 ```
 cookbook_utils/     shared synthetic-data generators + cached Yahoo downloader
-notebooks/          51 recipes × (.py source ⇄ executed .ipynb)
+notebooks/          53 recipes × (.py source ⇄ executed .ipynb)
 notebooks_ja/       Japanese translations of the established recipe set
 scripts/            build tooling (py → executed ipynb)
 data/cache/         cached real market data (parquet)

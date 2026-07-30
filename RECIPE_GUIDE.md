@@ -102,6 +102,14 @@ panel = cu.make_prediction_markets(n_markets=240, steps=48, seed=11)
 #   later; tail_steps further snapshots quote the resolved book at ~1.00/~0.00 so a
 #   full-window replay reaches settlement and a truncated one does not.
 truth = cu.market_truth(panel)                        # instrument_id, yes_won - the answer key
+
+# Vendor-shaped fixtures, for recipes that exercise the ingest path (05/06, 05/07).
+payloads = cu.polymarket_market_payloads(panel)        # public market-endpoint JSON,
+#   including the awkward parts: list fields as JSON-encoded strings, resolution as
+#   settled outcomePrices plus a closed flag, ISO-8601 times.
+files = cu.write_polymarket_archive(panel, "data/cache/mirror")   # hourly Parquet in the
+#   full-feed archive shape: event_type, timestamp (ms), market, asset_id, nested
+#   bids/asks, flat price/size/side. The inverse of h5i_db.venues, for teaching only.
 ```
 
 One invariant of that fixture is load-bearing: rows sharing an `event_index`

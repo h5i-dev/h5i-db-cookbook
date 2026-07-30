@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import math
 import random
+from pathlib import Path
 
 import pyarrow as pa
 
@@ -367,3 +368,157 @@ def market_truth(tables: dict[str, pa.Table]) -> pa.Table:
             ),
         }
     )
+
+
+def _token_id(instrument_id: str, label: str) -> str:
+    """The vendor's per-outcome token id, as these venues shape it."""
+    return f"{instrument_id}-{label.lower()}"
+
+
+def polymarket_market_payloads(tables: dict[str, pa.Table]) -> list[dict]:
+    """The panel's markets in the shape a public market endpoint returns.
+
+    Including the awkward parts, because a recipe that only handles the tidy
+    form teaches the wrong lesson: the list fields arrive as JSON-encoded
+    strings, the resolution is expressed as settled prices plus a closed flag,
+    and times are ISO-8601.
+    """
+    import json
+
+    instruments = tables["instruments"].to_pandas()
+    resolutions = tables["resolutions"].to_pandas().set_index("instrument_id")
+    payloads = []
+    for instrument_id, group in instruments.groupby("instrument_id", sort=True):
+        ordered = group.sort_values("outcome")
+        labels = [str(label) for label in ordered.outcome_label]
+        winner = resolutions.winner_outcome.get(instrument_id)
+        prices = ["0"] * len(labels)
+        if winner is not None:
+            prices[int(winner)] = "1"
+        expiry = int(ordered.expiration_ns.iloc[0])
+        observable = int(ordered.settlement_observable_ns.iloc[0])
+        payloads.append(
+            {
+                "condition_id": instrument_id,
+                "slug": instrument_id.lower(),
+                "outcomes": json.dumps(labels),
+                "clobTokenIds": json.dumps(
+                    [_token_id(instrument_id, label) for label in labels]
+                ),
+                "outcomePrices": json.dumps(prices),
+                "closed": winner is not None,
+                "tick_size": float(ordered.tick_size.iloc[0]),
+                "endDate": pd_timestamp_iso(expiry),
+                "umaResolutionTime": pd_timestamp_iso(observable),
+            }
+        )
+    return payloads
+
+
+def pd_timestamp_iso(nanos: int) -> str:
+    """Epoch nanoseconds to the ISO-8601 spelling these APIs use."""
+    import pandas as pd
+
+    return pd.Timestamp(int(nanos), unit="ns", tz="UTC").isoformat().replace("+00:00", "Z")
+
+
+def write_polymarket_archive(
+    tables: dict[str, pa.Table],
+    root: str | Path,
+    *,
+    partition: str = "1h",
+) -> list[Path]:
+    """De-normalise a canonical panel into vendor-shaped Parquet hours.
+
+    The inverse of what `h5i_db.venues` does, and only useful for teaching: it
+    lets a recipe ingest a realistic archive without shipping vendor data or
+    reaching the network. The column contract is the one the hourly full-feed
+    archives publish: `event_type`, `timestamp` in milliseconds, `market`,
+    `asset_id`, nested `bids`/`asks` for book states, and flat
+    `price`/`size`/`side` for incremental changes and prints.
+
+    Returns the files written, in time order.
+    """
+    import pandas as pd
+    import pyarrow.parquet as pq
+
+    base = Path(root)
+    base.mkdir(parents=True, exist_ok=True)
+
+    labels = {
+        (row.instrument_id, int(row.outcome)): str(row.outcome_label)
+        for row in tables["instruments"].to_pandas().itertuples()
+    }
+    book = tables["book_deltas"].to_pandas()
+    trades = tables["trades"].to_pandas()
+
+    rows: list[dict] = []
+    # One book event becomes one archive row, with its levels nested.
+    for (_, event_index), group in book.groupby(
+        ["instrument_id", "event_index"], sort=False
+    ):
+        head = group.iloc[0]
+        instrument_id = str(head.instrument_id)
+        outcome = int(head.outcome)
+        bids = [
+            {"price": float(row.price), "size": float(row["size"])}
+            for _, row in group[group.side == "buy"].iterrows()
+            if row.price is not None
+        ]
+        asks = [
+            {"price": float(row.price), "size": float(row["size"])}
+            for _, row in group[group.side == "sell"].iterrows()
+            if row.price is not None
+        ]
+        rows.append(
+            {
+                "event_type": "book",
+                "timestamp": int(pd.Timestamp(head.ts_init).value // 1_000_000),
+                "market": instrument_id,
+                "asset_id": _token_id(instrument_id, labels[(instrument_id, outcome)]),
+                "bids": bids,
+                "asks": asks,
+                "price": None,
+                "size": None,
+                "side": None,
+            }
+        )
+    for row in trades.itertuples():
+        instrument_id = str(row.instrument_id)
+        outcome = int(row.outcome)
+        rows.append(
+            {
+                "event_type": "last_trade_price",
+                "timestamp": int(pd.Timestamp(row.ts_init).value // 1_000_000),
+                "market": instrument_id,
+                "asset_id": _token_id(instrument_id, labels[(instrument_id, outcome)]),
+                "bids": None,
+                "asks": None,
+                "price": float(row.price),
+                "size": float(row.size),
+                "side": str(row.aggressor) if row.aggressor else None,
+            }
+        )
+
+    frame = pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
+    level = pa.struct([("price", pa.float64()), ("size", pa.float64())])
+    schema = pa.schema(
+        [
+            pa.field("event_type", pa.string()),
+            pa.field("timestamp", pa.int64()),
+            pa.field("market", pa.string()),
+            pa.field("asset_id", pa.string()),
+            pa.field("bids", pa.list_(level)),
+            pa.field("asks", pa.list_(level)),
+            pa.field("price", pa.float64()),
+            pa.field("size", pa.float64()),
+            pa.field("side", pa.string()),
+        ]
+    )
+    stamps = pd.to_datetime(frame.timestamp, unit="ms", utc=True)
+    written: list[Path] = []
+    for bucket, chunk in frame.groupby(stamps.dt.floor(partition), sort=True):
+        path = base / f"{bucket.strftime('%Y%m%dT%H%M%SZ')}.parquet"
+        pq.write_table(pa.Table.from_pandas(chunk, schema=schema, preserve_index=False), path)
+        written.append(path)
+    return written
