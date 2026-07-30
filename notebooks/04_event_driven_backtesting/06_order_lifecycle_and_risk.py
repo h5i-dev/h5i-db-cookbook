@@ -1,11 +1,35 @@
 # %% [markdown]
 # # Order lifecycle and account risk
 #
+# Most backtests model an order as a single event. It is sent and it fills.
+# Real orders have a life. They rest, they get repriced as the market moves,
+# they lose queue priority when they do, they get cancelled when they go
+# stale, and they get rejected outright when they would breach a limit.
+#
+# Modelling only the fill hides two things that cost real money. Repricing
+# sends you to the back of the queue. And a risk limit that lives in your
+# notebook is not a risk limit.
+#
 # A production backtest needs more than timestamped entries. Quotes are
 # amended, stale orders are cancelled, and account limits must reject unsafe
 # intent before it reaches the simulated venue. This recipe exercises that
 # complete lifecycle with stable client order IDs and inspects the resulting
 # audit trail.
+
+# %% [markdown]
+# ## Terms used here
+#
+# | term            | meaning |
+# | --------------- | --- |
+# | order lifecycle | submit, amend, cancel, fill, expire: everything an order does after it is sent |
+# | amend           | changing the price or size of a resting order rather than replacing it |
+# | client order ID | your own stable identifier for an order, so its whole history joins up |
+# | preflight       | a check that rejects unsafe or unsupported intent before it reaches the venue |
+# | account limit   | a cap on exposure, order size or cash that the engine enforces natively |
+# | audit trail     | the record of what was requested, what was rejected, and why |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
 
 # %%
 import datetime as dt
@@ -121,8 +145,8 @@ orders[
 ]
 
 # %% [markdown]
-# The quote was intentionally away from the market, so cancellation—not a
-# fill—is the expected outcome. `explain()` makes silence inspectable, and
+# The quote was intentionally away from the market, so the expected outcome is
+# cancellation rather than a fill. `explain()` makes silence inspectable, and
 # `verify()` reruns the persisted config and compares every authoritative
 # output table.
 

@@ -16,6 +16,22 @@
 #    over time shifts, localizes the lag without ever resampling,
 # 5. finish with a real-data reality check on a daily equity pair.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term                       | meaning |
+# | -------------------------- | --- |
+# | lead-lag                   | one instrument's moves systematically preceding another's |
+# | cross-correlation function | correlation between two series at a range of time offsets |
+# | asynchronous               | the two instruments tick at different, unaligned instants |
+# | Epps effect                | measured correlation falling toward zero as the sampling interval shrinks |
+# | locf                       | last observation carried forward, one of the fixes that causes the bias |
+# | Hayashi-Yoshida            | a covariance estimator that pairs overlapping tick intervals, needing no grid |
+# | ADR                        | a foreign share traded locally, the classic lead-lag pair with its home listing |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import numpy as np
 import pandas as pd

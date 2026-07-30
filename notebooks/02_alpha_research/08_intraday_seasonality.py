@@ -17,6 +17,22 @@
 # effects the generator does and does not contain, and on real SPY/QQQ hourly
 # bars.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term                 | meaning |
+# | -------------------- | --- |
+# | intraday seasonality | patterns that repeat by time of day rather than across dates |
+# | U-shape              | the volume curve: heavy at the open and close, thin in the middle of the day |
+# | volatility smile     | here the same U-shape in volatility, unrelated to the options smile |
+# | spread decay         | quoted spreads narrowing through the morning as uncertainty clears |
+# | session              | one trading day as the exchange defines it, e.g. 09:30-16:00 New York |
+# | DST                  | daylight saving time; sessions are fixed in local time, so their UTC offset shifts |
+# | IANA timezone        | a named zone such as `America/New_York`, which carries its own DST rules |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import numpy as np
 import pandas as pd

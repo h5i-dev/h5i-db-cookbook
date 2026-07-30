@@ -16,6 +16,23 @@
 # 3. an honest look at contemporaneous versus *predictive* correlation with
 #    1-minute returns.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term                 | meaning |
+# | -------------------- | --- |
+# | order flow imbalance | buyer-initiated volume minus seller-initiated volume over a window |
+# | buyer-initiated      | the buyer crossed the spread to make the trade happen; feeds rarely say, so it is inferred |
+# | signed volume        | trade volume carrying that sign |
+# | Lee-Ready            | the standard signing rule: compare the trade price to the prevailing mid |
+# | tick test            | the fallback rule: compare the trade to the previous trade price |
+# | quote OFI            | book pressure from changes in best bid and ask prices and sizes |
+# | contemporaneous      | measured over the same window as the return, so it explains rather than predicts |
+# | predictive           | measured over the window before the return, which is the only useful kind |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import numpy as np
 import pandas as pd

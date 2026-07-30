@@ -1,9 +1,31 @@
 # %% [markdown]
 # # Operate reproducible backtests
 #
+# A backtest is a claim about the past, and it is worth what the evidence
+# behind it is worth. Six months later a reviewer wants to run it again and
+# get the same number.
+#
+# The obstacle is that a research database keeps ingesting. Late prints land,
+# vendors restate, and the same run reads a larger table than it did. Pinning
+# the code is not enough, because the data moved underneath it.
+#
 # Reproducibility is an operational property, not a random seed. This recipe
 # pins a market-data cut, appends late data, proves that pinned runs remain
 # unchanged, and inspects the run manifests needed for review.
+
+# %% [markdown]
+# ## Terms used here
+#
+# | term            | meaning |
+# | --------------- | --- |
+# | reproducibility | a rerun reading the same bytes and producing the same numbers, months later |
+# | pin             | fixing a run's inputs to an exact version or snapshot |
+# | late data       | rows for a period that arrive after that period was already read |
+# | coverage gate   | a check that the pinned window actually contains the data the run assumed |
+# | run manifest    | the record of what a run consumed and produced, which is what review reads |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
 
 # %% [markdown]
 # Build one 240-second tape, then split it into an approved 180-second cut and

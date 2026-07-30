@@ -10,6 +10,23 @@
 # once with the venue's real curve, and the gross result is checked against the
 # arithmetic by hand.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term           | meaning |
+# | -------------- | --- |
+# | event contract | a contract paying 1.00 if a stated event happens and 0.00 if it does not |
+# | YES / NO       | the two sides; exactly one of them pays, so their prices read as probabilities |
+# | parity         | the identity that YES and NO must sum to 1.00 |
+# | basis          | the size of the gap when they do not; "a two-cent basis" means the pair costs 0.98 |
+# | arbitrage      | a position locked in by arithmetic rather than by a forecast |
+# | fee curve      | fees scaling with `p*(1-p)`, so they are largest at 0.50 and near zero at the extremes |
+# | settlement     | paying out on the determined outcome; a held position is worth exactly 1.00 or 0.00 |
+# | gross vs net   | before fees against after them, run as the same signals through two configs |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import datetime as dt
 

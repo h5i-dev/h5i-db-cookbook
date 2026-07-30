@@ -18,6 +18,22 @@
 # 4. Compare NAV against a benchmark, measure weight drift between rebalances,
 #    and reconstruct the book point-in-time.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term         | meaning |
+# | ------------ | --- |
+# | holdings     | the book: what the portfolio owns, and in what weight |
+# | rebalance    | recomputing target weights and trading to them, on a schedule |
+# | turnover     | how much of the book is traded at each rebalance, the direct driver of costs |
+# | weight drift | weights moving between rebalances because prices moved, not because you traded |
+# | NAV          | net asset value: the book's total worth at a point in time |
+# | benchmark    | the passive alternative the strategy is judged against |
+# | version diff | reconstructing what changed by comparing two committed versions |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import numpy as np
 import pandas as pd

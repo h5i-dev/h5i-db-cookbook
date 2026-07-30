@@ -19,6 +19,21 @@
 # 2. scale up to three threads racing to ingest a chunked feed,
 # 3. hit the same conflict machinery through the plan/apply mutation flow.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term                   | meaning |
+# | ---------------------- | --- |
+# | optimistic concurrency | writers do not lock; a commit is rejected if the head moved under it |
+# | `expected_version`     | the version a commit believes it is extending |
+# | `ConflictError`        | the rejection raised when it was not; a retry, not a lost update |
+# | lost update            | two writers interleaving so one silently overwrites the other's rows |
+# | retry                  | re-reading the new head and reapplying the write against it |
+# | plan / apply           | stage a delete or replace, review it, then commit it; conflicts apply here too |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import threading
 

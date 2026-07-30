@@ -18,6 +18,24 @@
 # 4. probe the strict append contract: what h5i-db rejects at the door,
 # 5. map out which schema changes are cheap later, and which are a rebuild.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term        | meaning |
+# | ----------- | --- |
+# | trade       | an executed transaction: price, size, timestamp |
+# | quote       | a venue's current willingness to trade, published as a bid and an ask |
+# | bid / ask   | highest price a buyer will pay, lowest price a seller will accept |
+# | OHLCV bar   | ticks aggregated into a fixed interval: open, high, low, close, volume |
+# | Arrow       | the in-memory columnar format h5i-db speaks; pandas and polars convert cheaply |
+# | schema      | the table's column names and types, fixed at creation |
+# | time column | the column h5i-db sorts and prunes on; every table declares one |
+# | sort key    | physical row order inside a segment; must start with the time column |
+# | segment     | one immutable Parquet file holding a time range of rows |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import pyarrow as pa
 

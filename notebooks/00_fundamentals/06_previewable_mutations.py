@@ -21,6 +21,20 @@
 #
 # That last step is the safety story for shared and agent-operated databases.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term            | meaning |
+# | --------------- | --- |
+# | tick            | one event on a market data feed, usually a trade or a quote update |
+# | plan / apply    | stage a delete or replace, review its row counts and samples, then commit it |
+# | mutation policy | a database-level setting that blocks direct destructive writes |
+# | version         | the state of a table after a commit; versions are immutable and stay readable |
+# | `restore`       | roll back by committing an old version forward, so history grows rather than shrinks |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import pandas as pd
 import pyarrow as pa

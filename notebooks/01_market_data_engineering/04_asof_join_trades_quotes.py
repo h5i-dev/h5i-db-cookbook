@@ -18,6 +18,25 @@
 # 4. use tolerance to refuse stale quotes rather than silently mark against
 #    them.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term             | meaning |
+# | ---------------- | --- |
+# | ASOF join        | join each left row to the most recent right row at or before its timestamp |
+# | prevailing quote | the quote in force at the instant a trade printed |
+# | mid              | the average of bid and ask, the usual stand-in for "the price" |
+# | quoted spread    | ask minus bid as displayed, before any trade happens |
+# | effective spread | twice the distance from the trade price to the prevailing mid |
+# | realized spread  | the same measured against a mid some minutes later, so price drift is stripped out |
+# | trade signing    | inferring whether the buyer or the seller was the aggressor |
+# | Lee-Ready        | the standard signing rule: compare the trade price to the prevailing mid |
+# | tick test        | the fallback rule: compare the trade to the previous trade price |
+# | tolerance        | a maximum quote age, so a stale quote refuses to match rather than mislead |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import time
 

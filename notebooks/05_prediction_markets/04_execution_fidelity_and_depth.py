@@ -9,6 +9,24 @@
 # snapshot *does* support, watches preflight refuse the one it does not, and
 # prices the size you can actually trade.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term           | meaning |
+# | -------------- | --- |
+# | snapshot data  | the book sampled on a grid, which is what public APIs give you |
+# | delta data     | every individual book change, which snapshots cannot be turned back into |
+# | depth          | the size resting at each price level, and so the size you can actually trade |
+# | microprice     | the mid weighted by size on each side, a better estimate of where price is going |
+# | imbalance      | bid size relative to ask size at the top of book |
+# | queue position | where your order sits in the line at its price level; it needs delta data |
+# | preflight      | a check that rejects a claim the data cannot support, before the run starts |
+# | fill ratio     | the fraction of your intended quantity that actually executed |
+# | cost budget    | the total costs a strategy must clear before it makes anything |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import datetime as dt
 

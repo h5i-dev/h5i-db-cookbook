@@ -19,6 +19,24 @@
 # 4. estimate market-model betas and compute CAR[-10,+10], treated against
 #    control, with confidence bands.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term              | meaning |
+# | ----------------- | --- |
+# | event study       | measuring abnormal returns in a window around a dated event |
+# | estimation window | the earlier period used to fit the market model |
+# | event window      | the period around the event where the effect is measured, here [-10, +10] days |
+# | market model      | the regression `r_asset = alpha + beta * r_market + e` |
+# | beta              | how much an asset moves for a one-unit move in the market |
+# | abnormal return   | what is left of a return after removing the market model prediction |
+# | CAR               | cumulative abnormal return, summed over the event window |
+# | treated / control | the events carrying the injected shock, against those that do not |
+# | ASOF join         | used here with `'forward'`, to find the first session at or after an announcement |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import numpy as np
 import pandas as pd

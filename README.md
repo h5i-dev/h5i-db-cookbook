@@ -5,6 +5,13 @@ the embedded, versioned time-series database for market data workloads.
 
 日本語版は [`notebooks_ja/`](notebooks_ja/README.md) にあります（コードは同一、解説のみ翻訳）.
 
+Written for two readers at once. Recipes assume no quant background: each opens
+with the professional problem it solves, then a **Terms used here** table
+defining only the jargon that recipe needs. If you already know the field, skip
+that cell. [GLOSSARY.md](GLOSSARY.md) collects every term in one place and
+suggests a reading order for each starting point
+([日本語版](GLOSSARY.ja.md)).
+
 ## Setup
 
 ```bash
@@ -132,7 +139,8 @@ markets rather than a few thousand days.
 ```
 cookbook_utils/     shared synthetic-data generators + cached Yahoo downloader
 notebooks/          54 recipes × (.py source ⇄ executed .ipynb)
-notebooks_ja/       Japanese translations of the established recipe set
+notebooks_ja/       the same 54 recipes, Japanese prose, byte-identical code
+GLOSSARY.md         every term the recipes use (GLOSSARY.ja.md in Japanese)
 scripts/            build tooling (py → executed ipynb)
 data/cache/         cached real market data (parquet)
 data/dbs/           databases created by recipes (disposable)

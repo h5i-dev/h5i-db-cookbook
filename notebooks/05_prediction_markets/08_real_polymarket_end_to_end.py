@@ -13,6 +13,23 @@
 # this one spends its length on how you establish that a rule does *not* work,
 # which is the same machinery you need to believe one that does.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term            | meaning |
+# | --------------- | --- |
+# | tick-level data | every recorded book event, rather than a periodic sample |
+# | round trip      | one buy and the sell that closes it, which is where costs are paid |
+# | cost budget     | the total costs a strategy must clear before it makes anything |
+# | maker / taker   | a maker posts and waits; a taker crosses the spread and trades immediately |
+# | UMA             | the decentralized oracle protocol Polymarket resolves its markets through |
+# | holdout         | data deliberately untouched until the end, which can only be spent once |
+# | deflated Sharpe | a Sharpe adjusted downward for how many variants were tried |
+# | negative result | establishing that a rule does not work, using the same machinery as believing one that does |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import json
 import time

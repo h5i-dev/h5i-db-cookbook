@@ -20,6 +20,22 @@
 # every EOD run with its note and wall-clock commit time, and `compact()` to
 # keep the table healthy after many small daily appends.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term               | meaning |
+# | ------------------ | --- |
+# | VaR                | the loss a book will not exceed on a given day at a chosen confidence |
+# | Expected Shortfall | the average loss on the days that do breach VaR, which is what VaR ducks |
+# | historical VaR     | read straight off the empirical distribution of past returns |
+# | parametric VaR     | assume a distribution, usually normal, and read the quantile from it |
+# | confidence level   | the 95% or 99% in the VaR statement |
+# | exception          | a day whose loss exceeded the forecast; 99% VaR should produce them 1% of the time |
+# | Kupiec POF test    | a test of whether the observed exception count matches the confidence claimed |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import numpy as np
 import pandas as pd

@@ -17,6 +17,22 @@
 # 3. compute minute bars with VWAP in one query,
 # 4. read the table as it was before the last load.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term        | meaning |
+# | ----------- | --- |
+# | tick        | one event on a market data feed, usually a trade or a quote update |
+# | tape        | the stream of trades in time order |
+# | OHLCV bar   | ticks aggregated into a fixed interval: open, high, low, close, volume |
+# | VWAP        | volume-weighted average price, the average price the whole market paid |
+# | commit      | one atomic write, which produces a new version of the table |
+# | version     | the state of a table after a commit; versions are immutable and stay readable |
+# | time travel | reading a table as it was at an earlier version |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import h5i_db
 import pyarrow as pa

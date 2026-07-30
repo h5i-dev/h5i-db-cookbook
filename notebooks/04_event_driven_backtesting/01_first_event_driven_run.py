@@ -1,9 +1,36 @@
 # %% [markdown]
 # # Your first event-driven backtest
 #
+# The backtests in section 02 are vectorized. Compute a signal for every date,
+# multiply it by the return that followed, and sum. That is the right tool for
+# a monthly rebalance, and it quietly assumes you traded at a price nobody
+# quoted you.
+#
+# An event-driven backtest drops that assumption. Orders are submitted at an
+# instant, they meet the order book as it was recorded at that instant, and the
+# engine decides whether they filled, at what price, and after what fees and
+# delay. It costs more to run. It is also the only way to ask whether a
+# strategy survives its own execution.
+#
 # This recipe turns timestamped order intent into an auditable simulation.
 # Market data is pinned before the strategy is written. Orders, fills,
 # positions, and equity are ordinary versioned tables on an isolated fork.
+
+# %% [markdown]
+# ## Terms used here
+#
+# | term                  | meaning |
+# | --------------------- | --- |
+# | event-driven backtest | orders meet recorded market data event by event, not a bar price |
+# | signal                | here the order intent: what to trade, which way, how much, and at what instant |
+# | fill                  | an execution against your order, produced by the engine rather than assumed |
+# | position              | the running quantity held in an instrument, with its cost basis |
+# | equity curve          | cumulative account value over time |
+# | run fork              | an isolated branch of the database a run writes its results into, so runs never collide |
+# | pin                   | fixing the run's market data to an exact snapshot, before the strategy is written |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
 
 # %% [markdown]
 # The fixture contains reference data, atomic L2 snapshots, and prints for one

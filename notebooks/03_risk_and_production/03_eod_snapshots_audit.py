@@ -19,6 +19,21 @@
 # 4. close with integrity attestation via `verify(deep=True)` and retention via
 #    `vacuum`.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term                | meaning |
+# | ------------------- | --- |
+# | EOD                 | end of day: the official daily cut of prices, positions and marks |
+# | snapshot            | a named, checksummed pin of table versions; O(1) because it copies nothing |
+# | audit trail         | the record of what was known when, in a form someone else can check |
+# | `verify(deep=True)` | re-checksum every stored byte, as an integrity attestation |
+# | `vacuum`            | reclaim unreferenced storage; it never removes committed version history |
+# | retention           | how long records must be kept before they may be discarded |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import pandas as pd
 import pyarrow as pa

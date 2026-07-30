@@ -9,6 +9,23 @@
 # than the best. This recipe demonstrates the first and puts a number on the
 # second.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term                        | meaning |
+# | --------------------------- | --- |
+# | settlement risk             | marking an open position to the eventual winner, which nobody could have collected |
+# | observability gate          | refusing to settle until the outcome was actually knowable |
+# | selection bias              | the winner of a sweep often being the luckiest variant rather than the best |
+# | holdout                     | data deliberately untouched until the end, which can only be spent once |
+# | overfitting                 | finding a rule that describes the noise in your sample, not repeatable structure |
+# | PBO                         | probability of backtest overfitting; above 0.5 means selection is worse than random |
+# | deflated Sharpe             | a Sharpe adjusted downward for how many variants were tried |
+# | minimum track record length | how long a record must be before a Sharpe is distinguishable from zero |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import datetime as dt
 

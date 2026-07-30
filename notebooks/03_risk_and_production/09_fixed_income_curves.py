@@ -18,6 +18,24 @@
 # 3. *find* the bad mark in SQL and restate it with `plan_replace_range`,
 # 4. prove the pre-restatement view is still queryable forever.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term        | meaning |
+# | ----------- | --- |
+# | yield curve | interest rate plotted against maturity |
+# | par curve   | the curve quoted as the coupon that prices a bond at 100 |
+# | tenor       | the maturity point on the curve, e.g. 2y or 10y |
+# | long format | one row per `(date, tenor, yield)` rather than one column per tenor |
+# | slope       | a long tenor's yield minus a short one's, e.g. 10y minus 2y |
+# | curvature   | the middle of the curve against its ends, also called a butterfly |
+# | carry       | what a position earns from time passing, if the curve does not move |
+# | rolldown    | the gain from a bond aging into a lower point on an upward sloping curve |
+# | mark        | an official price for a position, set once per day or more often |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import matplotlib.pyplot as plt
 import numpy as np

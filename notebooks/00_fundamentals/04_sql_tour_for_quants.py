@@ -14,6 +14,24 @@
 # (`db.table(...)` plus verbs, recipe 09), which compiles to exactly these
 # statements. Call `.sql()` on any built query to see the SQL it produced.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term            | meaning |
+# | --------------- | --- |
+# | panel           | a dataset with one row per asset per date |
+# | cross-sectional | comparing assets against each other at one date, not against their own past |
+# | window function | SQL computing across neighbouring rows without collapsing them, e.g. `lag()` |
+# | CTE             | a named subquery introduced by `WITH`, so a multi-step query stays readable |
+# | `time_bucket`   | truncate timestamps to a grid, optionally in a named timezone |
+# | VWAP            | volume-weighted average price, the average price the whole market paid |
+# | EWMA            | exponentially weighted moving average: recent observations count more |
+# | ASOF join       | join each left row to the most recent right row at or before its timestamp |
+# | quantile        | rank rows into equal-sized buckets, the usual way to score a signal |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import pyarrow as pa
 

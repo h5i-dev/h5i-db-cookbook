@@ -8,6 +8,23 @@
 # take opposite sides of the same bias, then the part that decides it: at which
 # price levels the edge is larger than the cost of trading there.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term                   | meaning |
+# | ---------------------- | --- |
+# | favorite-longshot bias | cheap contracts are systematically overpriced and expensive ones underpriced |
+# | longshot / favorite    | a contract priced far below 0.50, against one priced far above it |
+# | ask                    | the lowest price a seller will accept, which is what a buyer actually pays |
+# | hold to resolution     | buy and keep the contract until it settles, rather than trading out |
+# | calibration gap        | quoted probability minus observed frequency, expressed per contract |
+# | return on capital      | profit divided by the money committed, which is why price level matters |
+# | fee curve              | fees scaling with `p*(1-p)`; as a share of capital that is `rate * (1-p)` |
+# | threshold sweep        | rerunning across a range of cutoffs; a plateau is a finding, a spike is a fitted parameter |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import datetime as dt
 

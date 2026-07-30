@@ -17,6 +17,21 @@
 # `kill -9` mid-write leaves the previous head fully consistent, and the loop
 # restarts by asking the database where the feed stopped.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term            | meaning |
+# | --------------- | --- |
+# | paper trading   | running the full live loop without sending real orders |
+# | attribution     | answering which input produced which order, after the fact |
+# | `tail`          | read exactly the rows committed after a version you name |
+# | high-water mark | the last version the loop processed, stored so it can resume |
+# | crash safety    | a commit is an atomic manifest swap, so a kill mid-write leaves the old head intact |
+# | time travel     | reading a table as it was at an earlier version, here to replay an order's input |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import numpy as np
 import pandas as pd

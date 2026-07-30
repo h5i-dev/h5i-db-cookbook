@@ -15,6 +15,24 @@
 # That last step is the "factor library" pattern, where every rebuild is a
 # commit you can diff and pin.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term            | meaning |
+# | --------------- | --- |
+# | factor          | a characteristic shared across assets that explains returns, e.g. value or momentum |
+# | value (B/P)     | book value divided by price; high means cheap relative to accounting worth |
+# | quality         | a profitability or stability measure; here revenue-growth stability |
+# | momentum (12-1) | the return over the last twelve months, excluding the most recent one |
+# | panel           | a dataset with one row per asset per date |
+# | point-in-time   | data stored and queried as it was known at each moment |
+# | lookahead bias  | using information the strategy could not have had; the bug that kills factors |
+# | IC              | information coefficient: correlation between a signal and the return that followed |
+# | quintile spread | top fifth minus bottom fifth by signal, a model-free readout of whether it works |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import numpy as np
 import pandas as pd

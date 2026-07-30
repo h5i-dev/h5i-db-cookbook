@@ -16,6 +16,21 @@
 # splits: AAPL 4:1 (2020-08-31), NVDA 4:1 (2021-07-20) and NVDA 10:1
 # (2024-06-10).
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term              | meaning |
+# | ----------------- | --- |
+# | corporate action  | a change to the security itself rather than to its price |
+# | split             | a share count multiplication, e.g. 4:1; the price divides by the same factor |
+# | adjusted close    | a close rescaled for all later splits and dividends, so returns compare across time |
+# | adjustment factor | the multiplier converting raw prices to adjusted ones |
+# | restatement       | rewriting stored history, here as a `write()` commit carrying a note |
+# | time travel       | reading a table as it was at an earlier version |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import numpy as np
 import pandas as pd

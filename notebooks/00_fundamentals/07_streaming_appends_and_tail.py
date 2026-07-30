@@ -19,6 +19,21 @@
 #    newest chunk touched,
 # 5. break the pure-append chain on purpose and read the error.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term            | meaning |
+# | --------------- | --- |
+# | tick            | one event on a market data feed, usually a trade or a quote update |
+# | append-only     | a table only ever extended at the end, never rewritten |
+# | `tail`          | read exactly the rows committed after a version you name |
+# | high-water mark | the last version a consumer processed, stored so it can resume |
+# | OHLCV bar       | ticks aggregated into a fixed interval: open, high, low, close, volume |
+# | `time_bucket`   | truncate timestamps to a grid, optionally in a named timezone |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import pandas as pd
 import pyarrow as pa

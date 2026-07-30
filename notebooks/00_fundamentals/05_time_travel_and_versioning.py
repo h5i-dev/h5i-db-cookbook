@@ -19,6 +19,22 @@
 #    two versions in one query,
 # 4. use `restore()` as a rollback that *adds* history instead of erasing it.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term        | meaning |
+# | ----------- | --- |
+# | commit      | one atomic write, which produces a new version of the table |
+# | version     | the state of a table after a commit; versions are immutable and stay readable |
+# | manifest    | the small file listing which segments make up a version |
+# | time travel | reading a table as it was at an earlier version, time, or named snapshot |
+# | as-of read  | time travel addressed by wall-clock commit time rather than version number |
+# | snapshot    | a named, checksummed pin of table versions; O(1) because it copies nothing |
+# | restatement | a vendor correcting historical data after the fact |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import pandas as pd
 import pyarrow as pa

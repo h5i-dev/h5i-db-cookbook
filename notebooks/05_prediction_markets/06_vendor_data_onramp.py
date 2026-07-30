@@ -12,6 +12,22 @@
 # Nothing here fetches. Downloading belongs in a script where credentials and
 # rate limits belong; `h5i_db.venues` is the part that must be reproducible.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term              | meaning |
+# | ----------------- | --- |
+# | vendor mirror     | a directory of vendor files already on disk, which is where most research starts |
+# | canonical tables  | the normalized shape a replay reads, whatever the vendor's layout was |
+# | market spec       | the definition of a market: its outcomes, tick size, and expiry |
+# | layout            | which vendor columns mean what, declared as data rather than hard-coded |
+# | content-addressed | keyed by the file's hash, so running the import twice replays rather than duplicates |
+# | coverage          | how much of the intended window the ingest actually got |
+# | quarantine        | what the importer does with a row it does not recognise, instead of dropping it |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import json
 from pathlib import Path

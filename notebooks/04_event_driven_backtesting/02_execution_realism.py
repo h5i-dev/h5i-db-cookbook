@@ -1,9 +1,35 @@
 # %% [markdown]
 # # Stress-test execution assumptions
 #
+# Every backtest contains execution assumptions, and most of them are never
+# written down. Fills happen at the price you asked for. Orders arrive the
+# instant you decide. Your limit order is first in the queue. None of those
+# hold, and each one flatters the result.
+#
+# The professional habit is to vary one assumption at a time against a fixed
+# tape, then look at how far the conclusion moves. A strategy whose sign
+# depends on the fee model is not a strategy. One that survives every plausible
+# setting has earned more work.
+#
 # A backtest is fragile when one fill assumption determines the conclusion.
 # This recipe runs one signal set through fees, adverse slippage, latency, and
 # queue position, then compares the resulting fills and cash.
+
+# %% [markdown]
+# ## Terms used here
+#
+# | term                     | meaning |
+# | ------------------------ | --- |
+# | fee                      | the venue's explicit charge per trade |
+# | slippage                 | the gap between the price you expected and the price you got |
+# | latency                  | the delay between the decision and its arrival at the venue |
+# | queue position           | where your order sits in the line at its price level, which decides whether it fills |
+# | maker / taker            | a maker posts and waits; a taker crosses the spread and trades immediately |
+# | implementation shortfall | total cost of turning a decision into a position, unfilled quantity included |
+# | sensitivity analysis     | rerunning with one assumption changed, to see whether it drove the conclusion |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
 
 # %% [markdown]
 # The input tape contains 240 L2 snapshots and 240 prints. Prices trend and

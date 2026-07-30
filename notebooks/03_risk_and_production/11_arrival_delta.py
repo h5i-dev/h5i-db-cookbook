@@ -21,6 +21,22 @@
 # check can mislead you: a *vacuous* result, and an event-time leak it is blind
 # to by construction. A diagnostic you trust incorrectly is worse than none.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term             | meaning |
+# | ---------------- | --- |
+# | `arrival_delta`  | run one query at the head and at a past decision point, and report the difference |
+# | decision instant | the moment the trade would have been placed, and so the only data you may use |
+# | arrival axis     | lookahead from rows that landed late or were restated after the decision |
+# | event-time axis  | lookahead from a window overrunning forward inside one snapshot |
+# | lookahead bias   | using information the strategy could not have had at the time |
+# | selection        | picking the best of many runs, which promotes whichever one leaked the most |
+# | embargo          | a gap between decision time and data time, so nothing leaks across the boundary |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import numpy as np
 import pandas as pd

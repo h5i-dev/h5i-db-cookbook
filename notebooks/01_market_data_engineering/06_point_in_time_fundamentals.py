@@ -17,6 +17,23 @@
 #    signal,
 # 4. use version pinning to keep a study reproducible after a restatement lands.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term           | meaning |
+# | -------------- | --- |
+# | fundamentals   | accounting figures such as earnings and book value, reported quarterly |
+# | `period_end`   | the fiscal date the numbers describe |
+# | report date    | the date the market actually learned them, typically 25 to 55 days later |
+# | reporting lag  | the gap between those two dates |
+# | point-in-time  | data stored and queried as it was known at each moment |
+# | lookahead bias | using information the strategy could not have had; the most flattering bug there is |
+# | EPS            | earnings per share |
+# | ASOF join      | join each left row to the most recent right row at or before its timestamp |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import numpy as np
 import pandas as pd

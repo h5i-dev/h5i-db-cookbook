@@ -16,6 +16,21 @@
 # 3. make concurrent loaders safe with optimistic locking,
 # 4. batch commits and compact the segments they leave behind.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term                   | meaning |
+# | ---------------------- | --- |
+# | append vs write        | `append` adds rows to the end; `write` replaces the contents as a new version |
+# | commit                 | one atomic write, which produces a new version of the table |
+# | optimistic concurrency | writers do not lock; a commit is rejected if the head moved under it |
+# | `ConflictError`        | that rejection, raised instead of silently interleaving two writers |
+# | segment                | one immutable Parquet file holding a time range of rows |
+# | compact                | merge many small segments into fewer large ones, as a new version |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import shutil
 from pathlib import Path

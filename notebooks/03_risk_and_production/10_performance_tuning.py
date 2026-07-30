@@ -21,6 +21,21 @@
 #
 # Absolute numbers are machine-specific. The *ratios* are the lesson.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term               | meaning |
+# | ------------------ | --- |
+# | pruning            | skipping whole segments whose time range cannot match the predicate, before any I/O |
+# | projection         | reading only the columns the query needs, which columnar storage makes cheap |
+# | commit granularity | how many rows go into each commit, which decides how many small files you get |
+# | `compact`          | merge many small segments into fewer large ones, as a new version |
+# | segment            | one immutable Parquet file holding a time range of rows |
+# | resource guard     | `timeout`, `max_rows` and `memory_limit`, which keep a shared box polite |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import time
 

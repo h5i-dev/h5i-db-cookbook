@@ -13,6 +13,16 @@ executes it and writes the paired `.ipynb`.
 # One-paragraph pitch: the professional problem this solves and why h5i-db's
 # features (versioning / ASOF / time_bucket / plan-apply / ...) matter for it.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term | meaning |
+# | --- | --- |
+# | <term> | <one line, no jargon inside the definition> |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import pyarrow as pa
 import h5i_db
@@ -23,9 +33,20 @@ db = h5i_db.Database(cu.fresh_db("<section>_<recipe>"), create=True)
 ```
 
 Rules:
-- **Audience: professional quants.** Assume they know finance (don't explain
-  what VWAP *is* beyond one line - show how to compute it well). Explain
-  h5i-db concepts on first use in that recipe.
+- **Two audiences, one prose register.** The body is written for professional
+  quants: don't explain what VWAP *is* beyond one line, show how to compute it
+  well. Beginners are served by the **Terms used here** cell instead, so the
+  prose never slows down for them. Explain h5i-db concepts on first use in that
+  recipe.
+- **Every recipe carries a "Terms used here" cell**, second cell, right after
+  the pitch. 5-10 rows, only terms that recipe actually leans on, ordered as the
+  recipe meets them. One line each, written for someone new to quant finance and
+  containing no jargon of its own. Backticks for API and SQL identifiers, plain
+  text for concepts. Anything defined there must also be in `GLOSSARY.md`, and
+  the link line closing the cell is verbatim across all recipes.
+- **The intro states the motivation**, not just the mechanics: what goes wrong
+  without this, or what question a desk is actually asking. A recipe whose
+  opening only describes its own steps is under-written.
 - **Show the data before you query it.** Every primary input table gets a
   markdown paragraph (what the generator returns, what one row is), a
   `column | type | meaning` table, and a code cell that loads, reports size and
@@ -63,6 +84,14 @@ Rules:
 - End with a short "Takeaways" markdown cell: 3-5 bullets, incl. which h5i-db
   features did the heavy lifting.
 - Close the database at the end: `db.close()`.
+- **Mirror it into `notebooks_ja/`.** Markdown cells are translated, code cells
+  stay byte-identical. The terms cell becomes `## ここで使う用語` with
+  `| 用語 | 意味 |` and links to `../../GLOSSARY.ja.md`. Verify with
+  `diff <(grep -v '^#' notebooks/S/R.py) <(grep -v '^#' notebooks_ja/S/R.py)`.
+  Japanese register is ですます調, tech genre; lint the extracted markdown with
+  the `natural-japanese` skill's `lint.py --genre tech`, never the `.py`. The
+  recurring finding is `antithesis_repetition`: 「〜ではなく」 trips at three per
+  document, so keep at most two and rephrase the rest.
 
 ## cookbook_utils cheatsheet
 

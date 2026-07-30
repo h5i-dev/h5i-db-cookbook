@@ -27,6 +27,23 @@
 # 6. pin the knowledge base to a version, because event time is only one of the
 #    two clocks.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term             | meaning |
+# | ---------------- | --- |
+# | RAG              | retrieval-augmented generation: search a knowledge base, then condition on what came back |
+# | encoder          | the step that turns a window of data into a fixed-size vector |
+# | embedding        | that vector, stored here as an ordinary list column |
+# | knowledge base   | the stored vectors, each next to the outcome that followed it |
+# | retriever        | the search that finds the nearest neighbours of a query vector |
+# | `array_distance` | the SQL function that measures distance between two vectors |
+# | leakage          | a neighbour whose outcome was not yet knowable, so the retriever hands you the answer |
+# | IC               | information coefficient: correlation between a forecast and the return that followed |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import numpy as np
 import pandas as pd

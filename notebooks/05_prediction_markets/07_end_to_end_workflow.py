@@ -11,6 +11,23 @@
 # here exists to keep one property true: the number at the end is attributable
 # to a pinned input, a named strategy, and a search whose shape is on the record.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term            | meaning |
+# | --------------- | --- |
+# | strategy pack   | a set of parameterized rules the search enumerates, rather than hand-written variants |
+# | walk-forward    | repeatedly fit on a window and test on the window after it, rolling forward |
+# | shortlist       | the few candidates the holdout is spent on, chosen without seeing it |
+# | holdout         | data deliberately untouched until the end, which can only be spent once |
+# | basket report   | one comparison table across all runs, so the choice is made in one place |
+# | Brier advantage | how much a forecast beats the base rate, in Brier score terms |
+# | deflated Sharpe | a Sharpe adjusted downward for how many variants were tried |
+# | pin             | fixing a run's inputs to an exact snapshot, so the final number is attributable |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import json
 from pathlib import Path

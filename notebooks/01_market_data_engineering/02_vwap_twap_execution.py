@@ -18,6 +18,23 @@
 # 4. benchmark a simulated parent order, 50k shares of AAPL worked over an
 #    hour, against interval VWAP and arrival mid.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term             | meaning |
+# | ---------------- | --- |
+# | VWAP             | volume-weighted average price, the average price the whole market paid |
+# | TWAP             | time-weighted average price, which ignores volume and so diverges from VWAP |
+# | arrival price    | the price at the instant the order reached the desk |
+# | slippage         | the gap between the price you expected and the price you got |
+# | basis point (bp) | one hundredth of a percent; execution costs are quoted in bp |
+# | parent order     | one large order worked over time as many small child executions |
+# | mid              | the average of bid and ask, the usual stand-in for "the price" |
+# | ASOF join        | join each left row to the most recent right row at or before its timestamp |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import numpy as np
 import pandas as pd

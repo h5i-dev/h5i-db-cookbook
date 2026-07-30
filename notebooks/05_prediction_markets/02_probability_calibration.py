@@ -9,6 +9,23 @@
 # by the instant the result became *observable*, and a point-in-time read proves
 # the forecast could not have seen them.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term                                   | meaning |
+# | -------------------------------------- | --- |
+# | calibration                            | whether quoted probabilities match observed frequencies |
+# | reliability curve                      | observed frequency against quoted probability; the diagonal is perfect |
+# | Brier score                            | mean squared error of a probability forecast, so lower is better |
+# | reliability / resolution / uncertainty | the three parts the Brier score decomposes into |
+# | log loss                               | an alternative score that punishes confident errors far more harshly |
+# | base rate                              | how often the event happens overall, the benchmark any forecast must beat |
+# | observability                          | when the outcome became knowable, which is what the resolutions table is dated by |
+# | point-in-time                          | a read proving the forecast could not have seen the answer key |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import matplotlib.pyplot as plt
 import numpy as np

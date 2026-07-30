@@ -20,6 +20,22 @@
 #    crosses, and how much tighter the consolidated spread is than any single
 #    book.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term             | meaning |
+# | ---------------- | --- |
+# | venue            | one exchange or trading system; US equities trade on more than a dozen at once |
+# | fragmentation    | the same instrument trading on many venues, so no single book is the market |
+# | top of book      | the best bid and best ask on one venue, with their sizes |
+# | NBBO             | the best bid and ask across all venues; execution quality is measured against it |
+# | inside           | the best price currently available; a venue "sets the inside" when it quotes it |
+# | locked / crossed | bid equal to ask, or bid above ask; transient artifacts of fragmentation |
+# | ASOF join        | join each left row to the most recent right row at or before its timestamp |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import numpy as np
 import pandas as pd
