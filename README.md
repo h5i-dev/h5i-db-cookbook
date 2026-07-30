@@ -125,12 +125,13 @@ markets rather than a few thousand days.
 | [05 Settlement and selection risk](notebooks/05_prediction_markets/05_settlement_and_selection_risk.ipynb) | Observability-gated settlement, why a time split fails on this panel, PBO, deflated Sharpe, and minimum track record length |
 | [06 Vendor data on-ramp](notebooks/05_prediction_markets/06_vendor_data_onramp.ipynb) | Vendor Parquet into canonical tables: market specs, layouts as data, content-addressed re-ingest, coverage, and the CLI |
 | [07 The whole loop, once](notebooks/05_prediction_markets/07_end_to_end_workflow.ipynb) | Ingest to decision: pin, strategy pack, walk-forward with a shortlist holdout, basket report, Brier advantage, deflated Sharpe, verify |
+| [08 The whole loop on real books](notebooks/05_prediction_markets/08_real_polymarket_end_to_end.ipynb) | Real tick-level Polymarket data end to end: eleven rules tested, all lose, and the cost budget explains why |
 
 ## Layout
 
 ```
 cookbook_utils/     shared synthetic-data generators + cached Yahoo downloader
-notebooks/          53 recipes × (.py source ⇄ executed .ipynb)
+notebooks/          54 recipes × (.py source ⇄ executed .ipynb)
 notebooks_ja/       Japanese translations of the established recipe set
 scripts/            build tooling (py → executed ipynb)
 data/cache/         cached real market data (parquet)
