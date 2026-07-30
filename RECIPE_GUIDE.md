@@ -13,6 +13,16 @@ executes it and writes the paired `.ipynb`.
 # One-paragraph pitch: the professional problem this solves and why h5i-db's
 # features (versioning / ASOF / time_bucket / plan-apply / ...) matter for it.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term | meaning |
+# | --- | --- |
+# | <term> | <one line, no jargon inside the definition> |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import pyarrow as pa
 import h5i_db
@@ -23,9 +33,20 @@ db = h5i_db.Database(cu.fresh_db("<section>_<recipe>"), create=True)
 ```
 
 Rules:
-- **Audience: professional quants.** Assume they know finance (don't explain
-  what VWAP *is* beyond one line - show how to compute it well). Explain
-  h5i-db concepts on first use in that recipe.
+- **Two audiences, one prose register.** The body is written for professional
+  quants: don't explain what VWAP *is* beyond one line, show how to compute it
+  well. Beginners are served by the **Terms used here** cell instead, so the
+  prose never slows down for them. Explain h5i-db concepts on first use in that
+  recipe.
+- **Every recipe carries a "Terms used here" cell**, second cell, right after
+  the pitch. 5-10 rows, only terms that recipe actually leans on, ordered as the
+  recipe meets them. One line each, written for someone new to quant finance and
+  containing no jargon of its own. Backticks for API and SQL identifiers, plain
+  text for concepts. Anything defined there must also be in `GLOSSARY.md`, and
+  the link line closing the cell is verbatim across all recipes.
+- **The intro states the motivation**, not just the mechanics: what goes wrong
+  without this, or what question a desk is actually asking. A recipe whose
+  opening only describes its own steps is under-written.
 - **Show the data before you query it.** Every primary input table gets a
   markdown paragraph (what the generator returns, what one row is), a
   `column | type | meaning` table, and a code cell that loads, reports size and
@@ -63,6 +84,14 @@ Rules:
 - End with a short "Takeaways" markdown cell: 3-5 bullets, incl. which h5i-db
   features did the heavy lifting.
 - Close the database at the end: `db.close()`.
+- **Mirror it into `notebooks_ja/`.** Markdown cells are translated, code cells
+  stay byte-identical. The terms cell becomes `## ここで使う用語` with
+  `| 用語 | 意味 |` and links to `../../GLOSSARY.ja.md`. Verify with
+  `diff <(grep -v '^#' notebooks/S/R.py) <(grep -v '^#' notebooks_ja/S/R.py)`.
+  Japanese register is ですます調, tech genre; lint the extracted markdown with
+  the `natural-japanese` skill's `lint.py --genre tech`, never the `.py`. The
+  recurring finding is `antithesis_repetition`: 「〜ではなく」 trips at three per
+  document, so keep at most two and rephrase the rest.
 
 ## cookbook_utils cheatsheet
 
@@ -85,6 +114,61 @@ real  = cu.fetch_daily(cu.SP500_EXAMPLES[:10], start="2020-01-01", end="2026-07-
 bars  = cu.fetch_intraday(["SPY","QQQ"], period="30d", interval="1h")
 ```
 All tables: `ts` is `timestamp[us, tz=UTC]`, sorted ascending.
+
+Backtest fixtures are separate: their time column is `ts_init` and it is
+`timestamp[ns]`, tz-naive, because that is the canonical backtest schema. Every
+raw-unit argument against them (`read(time_end=...)`, plan ranges) is therefore
+**nanoseconds**, not microseconds.
+
+```python
+fix = cu.make_backtest_fixture(steps=180)             # one market: instruments, book_deltas, trades
+panel = cu.make_prediction_markets(n_markets=240, steps=48, seed=11)
+#   -> instruments, book_deltas, trades, resolutions for a panel of binary markets.
+#   Quotes carry an injected favorite-longshot bias (longshot_bias=), the NO book is
+#   the complement plus an oscillating basis (basis_amplitude=), and winners are
+#   assigned by systematic sampling so calibration is measurable at panel size.
+#   Trading runs to expiry; the result becomes observable settlement_lag_minutes
+#   later; tail_steps further snapshots quote the resolved book at ~1.00/~0.00 so a
+#   full-window replay reaches settlement and a truncated one does not.
+truth = cu.market_truth(panel)                        # instrument_id, yes_won - the answer key
+
+# Vendor-shaped fixtures, for recipes that exercise the ingest path (05/06, 05/07).
+payloads = cu.polymarket_market_payloads(panel)        # public market-endpoint JSON,
+#   including the awkward parts: list fields as JSON-encoded strings, resolution as
+#   settled outcomePrices plus a closed flag, ISO-8601 times.
+files = cu.write_polymarket_archive(panel, "data/cache/mirror")   # hourly Parquet in the
+#   full-feed archive shape: event_type, timestamp (ms), market, asset_id, nested
+#   bids/asks, flat price/size/side. The inverse of h5i_db.venues, for teaching only.
+```
+
+One invariant of that fixture is load-bearing: rows sharing an `event_index`
+must describe ONE outcome of ONE instrument. One event is one book, so a
+snapshot spanning both outcomes describes a book that never existed, holding
+both sides' levels with a best ask belonging to the other outcome.
+
+h5i-db refuses this as of the fix in `store.rs::read_book_events`
+("one event describes one outcome of one instrument"). Older builds accepted it
+silently and filled against the wrong side: a YES buy paid the NO ask, with no
+error anywhere. If you are on a Python extension built before that fix, the
+failure is silent, so check the rule rather than relying on the engine to.
+
+`event_index` values need only *change* between events; they do not have to
+increase with `ts_init`. Grouping is by row contiguity terminated by `is_last`,
+and an unterminated event is caught explicitly. A generator that emits
+instrument-major (so the index walks backwards through time) still produces
+correct books.
+
+**Signal timing.** Stamp a signal strictly after the quote it was decided from
+(`decision_ts + timedelta(microseconds=1)`). A signal sharing a timestamp with a
+book event may match against the *previous* snapshot, and which one it gets
+depends on merge order among equal timestamps. Submitting after the decision
+quote fills at exactly the bid/ask you decided from, which is both deterministic
+and free of look-ahead. Recipes 05/01-05/05 all rely on this.
+
+**Post-resolution rows.** `make_prediction_markets` keeps quoting after the result
+is observable, so any scan measuring price behaviour must stop at
+`expiration_ns`; otherwise the resolution jump is scored as a price move and
+dominates every volatility estimate.
 
 Real-data calls are cached by exact argument set. These four are pre-cached -
 recipes should use one of them verbatim (then subset in SQL/pandas), not

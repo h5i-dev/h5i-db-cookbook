@@ -19,6 +19,23 @@
 # 3. build the portfolio and report an honest, cost-charged P&L,
 # 4. snapshot prices and signals together as the reproducibility layer.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term             | meaning |
+# | ---------------- | --- |
+# | signal           | a number computed from data that indicates a position to take |
+# | momentum (12-1)  | buy what has risen over the last twelve months, excluding the most recent one |
+# | cross-sectional  | ranking assets against each other at one date, not against their own past |
+# | rebalance        | recomputing target weights and trading to them, on a schedule |
+# | backtest         | simulating a strategy on historical data |
+# | basis point (bp) | one hundredth of a percent; trading costs are charged in bp |
+# | P&L              | profit and loss |
+# | snapshot         | a named, checksummed pin of table versions, so a rerun reads the same bytes |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import numpy as np
 import pandas as pd

@@ -13,6 +13,21 @@
 # The policy you pick is a modelling decision with real P&L consequences. This
 # recipe ends on the classic trap, phantom returns from stale locf prices.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term               | meaning |
+# | ------------------ | --- |
+# | illiquid           | traded rarely, so many intervals contain no trades at all |
+# | gapfill / resample | put an irregular series onto a regular time grid |
+# | locf               | last observation carried forward, one of the three fill policies |
+# | interpolate        | draw a straight line between the two observations either side of a hole |
+# | phantom return     | a return computed across a repeated stale price, which nobody could trade |
+# | covariance matrix  | pairwise return covariances, the input to most portfolio risk models |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import numpy as np
 import pandas as pd

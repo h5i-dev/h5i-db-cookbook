@@ -1,6 +1,15 @@
 # %% [markdown]
 # # Causal signal replay on real Polymarket books
 #
+# Synthetic data proves the plumbing works. It cannot tell you whether a
+# strategy works, because what you find in it is the structure the generator
+# put there.
+#
+# Real books are the test, and they punish design errors a generator forgives.
+# A feature computed from the bar it trades in, a resolution label that leaked
+# into a signal, a fill assumed at a price the book never showed: each of those
+# turns a losing rule into a winning backtest.
+#
 # This recipe builds a deliberately modest microstructure strategy on the
 # bounded [Kaggle Polymarket sample](https://www.kaggle.com/datasets/marvingozo/polymarket-tick-level-orderbook-dataset).
 # The professional lesson is the experimental design:
@@ -10,6 +19,22 @@
 # - orders meet real recorded books, not feature-bar prices;
 # - fees, latency, and slippage are sensitivity dimensions;
 # - every run is pinned and queryable on its own fork.
+
+# %% [markdown]
+# ## Terms used here
+#
+# | term             | meaning |
+# | ---------------- | --- |
+# | replay           | running recorded market data back through the engine in its original order |
+# | causal feature   | one computed only from data observable at its own timestamp |
+# | observability    | when a value actually became knowable, which is not when the event happened |
+# | resolution label | the eventual outcome, which the strategy must never see |
+# | imbalance        | bid size relative to ask size at the top of book |
+# | z-score          | how many standard deviations a value sits from its rolling mean |
+# | run fork         | an isolated branch of the database a run writes its results into |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
 
 # %%
 import datetime as dt
@@ -204,7 +229,6 @@ summary
 # %%
 assert summary["fills"].ge(2).all()
 assert summary["digest"].nunique() == len(summary)
-assert reports["base"].verify()["verified"]
 
 fill_frames = []
 for scenario, report in reports.items():
@@ -216,6 +240,11 @@ for scenario, report in reports.items():
     scenario_fills["scenario"] = scenario
     fill_frames.append(scenario_fills)
     run_db.close()
+
+# verify() reruns the config into a scratch fork and tears it down afterwards,
+# so read the run's own fork before calling it.
+assert reports["base"].verify()["verified"]
+
 fills = pd.concat(fill_frames, ignore_index=True)
 fills[["scenario", "ts", "side", "price", "quantity", "commission", "tag"]]
 

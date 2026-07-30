@@ -18,6 +18,24 @@
 # 4. compute the z-score in the database and backtest it honestly,
 # 5. re-run the entire study against an earlier data version.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term           | meaning |
+# | -------------- | --- |
+# | cointegration  | two prices that individually wander but whose difference does not |
+# | Engle-Granger  | the standard two-step test for it, run on the regression residual |
+# | hedge ratio    | how many units of the second leg to hold against one unit of the first |
+# | spread         | here the residual of that hedged pair, not the bid-ask spread |
+# | z-score        | how many standard deviations the spread sits from its rolling mean |
+# | mean reversion | the tendency to return to an average, which is what the pair trades on |
+# | Sharpe ratio   | annualized return divided by annualized volatility: reward per unit of risk |
+# | drawdown       | the percentage fall from the equity curve's running peak |
+# | version pin    | fixing a run's inputs to an exact version, so a rerun reads the same bytes |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import numpy as np
 import pandas as pd

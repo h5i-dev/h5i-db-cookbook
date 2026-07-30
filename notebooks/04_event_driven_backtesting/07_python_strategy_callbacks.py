@@ -1,11 +1,36 @@
 # %% [markdown]
 # # Path-dependent Python strategies
 #
+# Some strategies cannot be written as a table of order intent. A rule that
+# enters only once the previous position is confirmed closed, or that waits
+# thirty seconds after a fill before acting, depends on what already happened
+# rather than on the current row.
+#
+# That is what path-dependent means, and it needs the strategy to carry state
+# between events. The cost is a crossing into Python for every event the
+# strategy sees, which is why this recipe closes by naming the cheaper
+# boundaries and when to prefer them.
+#
 # Signals and command tables are the fastest strategy boundary because the
 # replay stays entirely in Rust. Some strategies genuinely need state,
 # fill-driven decisions, or timers. This recipe uses the opt-in Python callback
 # surface without giving strategy code direct access to borrowed engine
 # internals.
+
+# %% [markdown]
+# ## Terms used here
+#
+# | term              | meaning |
+# | ----------------- | --- |
+# | callback          | your Python function, called by the engine when something happens |
+# | path-dependent    | a decision that depends on what already happened, not only on current data |
+# | stateful          | the strategy carries variables between events |
+# | timer             | a callback scheduled for a future instant rather than triggered by data |
+# | strategy identity | a stable name for a strategy, so its runs stay comparable across reruns |
+# | determinism       | the same inputs producing the same outputs, every time, which reruns verify |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
 
 # %%
 import h5i_db

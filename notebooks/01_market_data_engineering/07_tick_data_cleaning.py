@@ -19,6 +19,21 @@
 # 4. lock the table down so direct, unreviewed mutations become policy
 #    violations.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term             | meaning |
+# | ---------------- | --- |
+# | tick             | one event on a market data feed, usually a trade or a quote update |
+# | fat-finger print | a trade recorded at an obviously wrong price, e.g. 10x off |
+# | outlier          | an observation far enough from the rest to be suspected bad rather than rare |
+# | plan / apply     | stage a delete or replace, review its row counts and samples, then commit it |
+# | mutation policy  | a database-level setting that blocks direct destructive writes |
+# | `restore`        | roll back by committing an old version forward, so history grows rather than shrinks |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import numpy as np
 import pandas as pd

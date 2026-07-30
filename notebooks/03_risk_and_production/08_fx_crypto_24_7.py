@@ -18,6 +18,21 @@
 # the FX pairs while keeping BTC trading through it. Below we flag where real
 # data would show structure this data cannot.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term                   | meaning |
+# | ---------------------- | --- |
+# | session                | one trading day as an exchange defines it, which FX and crypto simply do not have |
+# | daily close convention | the cut a desk agrees to call the close: NY 5pm, the Tokyo cut, UTC midnight |
+# | IANA timezone          | a named zone such as `America/New_York`, which carries its own DST rules |
+# | rolling window         | a statistic over the last N rows or N hours, recomputed at every row |
+# | gapfill                | put an irregular series onto a regular time grid |
+# | weekend halt           | FX stops from Friday evening to Sunday evening; crypto never does |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import matplotlib.pyplot as plt
 import numpy as np

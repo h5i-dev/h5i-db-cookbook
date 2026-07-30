@@ -6,6 +6,11 @@
 各レシピは英語版（[`notebooks/`](../notebooks)）と**コードが1文字も違いません**。翻訳して
 あるのは解説の文章だけなので、どちらを開いても同じ結果が出ますし、2つを並べて読むこともできます。
 
+クオンツの予備知識は前提にしていません。各レシピは、それが解こうとしている実務上の問題から始まり、
+続く「ここで使う用語」の表で、そのレシピに要る用語だけを説明します。すでにご存じならこのセルは
+飛ばしてください。[GLOSSARY.ja.md](../GLOSSARY.ja.md) には全用語をまとめ、出発点ごとの読む順番も
+書いてあります。
+
 実データを使うレシピは初回実行時に Yahoo Finance からダウンロードして `data/cache/` に
 保存するので、2回目以降はオフラインで再現できます。ティックレベルのデータが要るレシピは、
 シードを固定した現実的な合成データ生成器（`cookbook_utils/`）を使います。
@@ -76,6 +81,34 @@
 | [09 債券のカーブ](03_risk_and_production/09_fixed_income_curves.ipynb) | ポイントインタイムのイールドカーブ、キャリーとロールダウン、カーブ履歴 |
 | [10 性能チューニング](03_risk_and_production/10_performance_tuning.ipynb) | プルーニング、コンパクション、資源制限、バッチ化、そして速い理由 |
 | [11 arrival-delta](03_risk_and_production/11_arrival_delta.ipynb) | 後知恵に値段を付ける: スイープ全体への `arrival_delta` と、2つの誤解の形 |
+
+### 04 - イベント駆動バックテスト
+
+| レシピ | 学べること |
+|---|---|
+| [01 はじめてのイベント駆動バックテスト](04_event_driven_backtesting/01_first_event_driven_run.ipynb) | 注文意図としてのシグナル、ピン留めしたリプレイ、実行フォーク上の約定・ポジション・エクイティ |
+| [02 執行のリアリズム](04_event_driven_backtesting/02_execution_realism.ipynb) | 手数料、スリッページ、レイテンシ、キューポジション、そして実装ショートフォールの感応度 |
+| [03 再現できる運用](04_event_driven_backtesting/03_reproducible_backtest_operations.ipynb) | 安定したスナップショット再実行、遅れて届くデータ、カバレッジ・ゲート、監査用マニフェスト |
+| [04 Kaggle Polymarket のデータ契約](04_event_driven_backtesting/04_kaggle_polymarket_data_contract.ipynb) | 範囲を限ったダウンロード、ソースハッシュ、タイムスタンプの修復、正規 L2 スナップショット、能力の限界 |
+| [05 Kaggle Polymarket のリプレイ](04_event_driven_backtesting/05_kaggle_polymarket_replay.ipynb) | 実際の板の上での因果的な特徴量、イベント駆動の約定、手数料・レイテンシ・スリッページの感応度 |
+| [06 注文のライフサイクルとリスク](04_event_driven_backtesting/06_order_lifecycle_and_risk.ipynb) | 型のついたプリフライト、発注／訂正／取消、エンジン内蔵の口座制限、説明、意味的な検証 |
+| [07 Python の戦略コールバック](04_event_driven_backtesting/07_python_strategy_callbacks.ipynb) | 状態を持つ戦略、タイマー、約定を受けた行動、安定した戦略の同一性、コールバック再実行の検証 |
+
+### 05 - 予測市場
+
+払い戻しに上限があり、手数料が `p*(1-p)` に比例し、標本が数千日ではなく数百マーケットになる、
+バイナリ／カテゴリカルなイベント契約に特有のクオンツの進め方です。
+
+| レシピ | 学べること |
+|---|---|
+| [01 バイナリのパリティと手数料カーブ](05_prediction_markets/01_binary_parity_and_fee_curves.ipynb) | YES+NO=1 のアービトラージ、価格水準ごとの二次的な手数料ハードル、算術と突き合わせた決済 |
+| [02 確率のキャリブレーション](05_prediction_markets/02_probability_calibration.ipynb) | 信頼性曲線、Brier スコアの分解、対数損失、ベンチマーク予測、ラベル漏れがないことの point-in-time な証明 |
+| [03 フェイバリット・ロングショット・バイアス](05_prediction_markets/03_favorite_longshot_bias.ipynb) | 価格帯ごとの持ち切りリターン、手数料後に両側を取引、しきい値の台地、`sqrt(p(1-p))` のボラ比例 |
+| [04 執行の忠実度と板の厚み](05_prediction_markets/04_execution_fidelity_and_depth.ipynb) | スナップショットからのマイクロプライスとインバランス、キューの主張を拒むプリフライト、表示厚みに対する約定率、コスト予算 |
+| [05 決済リスクと選択リスク](05_prediction_markets/05_settlement_and_selection_risk.ipynb) | 観測可能性で制御する決済、このパネルで時間分割が失敗する理由、PBO、デフレーテッド・シャープ、最小トラックレコード長 |
+| [06 ベンダーデータの取り込み](05_prediction_markets/06_vendor_data_onramp.ipynb) | ベンダー Parquet から正規テーブルへ: マーケット仕様、データとしてのレイアウト、コンテンツアドレスの再取り込み、カバレッジ、CLI |
+| [07 ループ全体を一度だけ](05_prediction_markets/07_end_to_end_workflow.ipynb) | 取り込みから意思決定まで: ピン、戦略パック、ショートリストのホールドアウトを使うウォークフォワード、バスケットレポート、Brier アドバンテージ、デフレーテッド・シャープ、検証 |
+| [08 実データでのループ全体](05_prediction_markets/08_real_polymarket_end_to_end.ipynb) | ティックレベルの実 Polymarket データで一気通貫: 11の規則を試してすべて損。コスト予算がその理由を説明する |
 
 ## 作り直し方
 

@@ -14,6 +14,25 @@
 #    annualized risk target,
 # 4. compare raw and vol-targeted equity curves on real data.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term            | meaning |
+# | --------------- | --- |
+# | volatility      | the standard deviation of returns, the default proxy for how risky a position is |
+# | annualized      | a daily figure scaled to a year: returns by 252, volatility by `sqrt(252)` |
+# | EWMA            | exponentially weighted moving average: recent observations count more |
+# | lambda vs alpha | RiskMetrics weights the old estimate by lambda; h5i-db's alpha is `1 - lambda` |
+# | center of mass  | how long an EWMA remembers; daily lambda 0.94 is about 16 trading days |
+# | vol targeting   | scaling position size so realized risk stays near a fixed level |
+# | leverage        | exposure as a multiple of capital; 2x is two dollars of position per dollar of equity |
+# | equity curve    | cumulative strategy value over time, plotted as the growth of one dollar |
+# | drawdown        | the percentage fall from the equity curve's running peak |
+# | Sharpe ratio    | annualized return divided by annualized volatility: reward per unit of risk |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import numpy as np
 import pandas as pd

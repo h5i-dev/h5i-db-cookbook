@@ -17,6 +17,11 @@ from .synthetic import (
 from .real_data import fetch_daily, fetch_intraday, SP500_EXAMPLES
 from .dbs import db_path, fresh_db
 from .backtest_data import (
+    RESOLUTIONS_SCHEMA,
+    make_prediction_markets,
+    market_truth,
+    polymarket_market_payloads,
+    write_polymarket_archive,
     BOOK_DELTAS_SCHEMA,
     INSTRUMENTS_SCHEMA,
     TRADES_SCHEMA,
@@ -50,6 +55,11 @@ __all__ = [
     "INSTRUMENTS_SCHEMA",
     "TRADES_SCHEMA",
     "make_backtest_fixture",
+    "RESOLUTIONS_SCHEMA",
+    "make_prediction_markets",
+    "market_truth",
+    "polymarket_market_payloads",
+    "write_polymarket_archive",
     "KAGGLE_POLYMARKET_DATASET",
     "KAGGLE_POLYMARKET_LICENSE",
     "KaggleSample",

@@ -22,6 +22,25 @@
 # 3. draw the surface,
 # 4. use versioning to answer "what did the desk see at yesterday's close?"
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term               | meaning |
+# | ------------------ | --- |
+# | implied volatility | the volatility that makes a pricing model return the option's market price |
+# | IV surface         | implied volatility across strikes and expiries, as one object |
+# | chain              | all listed options on one underlying at one moment |
+# | ATM                | at the money: a strike near the current price |
+# | term structure     | the shape of IV across expiries, here taken at the money |
+# | delta              | the option's sensitivity to the underlying, also used to label strikes as "25-delta" |
+# | risk reversal      | the IV difference between a call and a put at equal delta, a readout of skew |
+# | butterfly          | the wings against the ATM, a readout of smile curvature |
+# | tenor              | time remaining to expiry, always derived from `expiry - ts` rather than stored |
+# | mark               | an official price for a position, set once per day or more often |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import matplotlib.pyplot as plt
 import numpy as np

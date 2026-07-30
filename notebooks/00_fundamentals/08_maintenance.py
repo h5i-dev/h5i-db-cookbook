@@ -13,6 +13,21 @@
 #    *unreferenced* objects only. We test what that means for old versions
 #    rather than assume it.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term      | meaning |
+# | --------- | --- |
+# | segment   | one immutable Parquet file holding a time range of rows |
+# | manifest  | the small file listing which segments make up a version |
+# | `verify`  | walk the checksum chain; `verify(deep=True)` re-checksums every stored byte |
+# | `compact` | merge many small segments into fewer large ones, as a new version |
+# | `vacuum`  | reclaim unreferenced storage; it never removes committed version history |
+# | snapshot  | a named, checksummed pin of table versions; O(1) because it copies nothing |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import time
 from pathlib import Path

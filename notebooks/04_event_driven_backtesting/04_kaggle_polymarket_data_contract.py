@@ -1,6 +1,15 @@
 # %% [markdown]
 # # A production data contract for Kaggle Polymarket L2
 #
+# A public dataset is not a research input. It is a pile of files carrying
+# whatever timestamps, units and duplicate rows the recorder happened to
+# produce, under a license that may not permit what you want to do.
+#
+# A data contract is the layer between the two. It states what the tables
+# guarantee, checks each guarantee rather than assuming it, and records
+# exactly which bytes it read. Without one, an unreproducible result is
+# indistinguishable from a wrong one.
+#
 # This recipe turns a bounded slice of the
 # [Marvingozo Polymarket dataset](https://www.kaggle.com/datasets/marvingozo/polymarket-tick-level-orderbook-dataset)
 # into canonical, versioned h5i-db tables. The objective is not an
@@ -11,6 +20,22 @@
 # - atomic full-book events;
 # - one normalized YES contract;
 # - a named h5i-db snapshot before any strategy is created.
+
+# %% [markdown]
+# ## Terms used here
+#
+# | term             | meaning |
+# | ---------------- | --- |
+# | data contract    | the stated guarantees about what a table holds, checked rather than assumed |
+# | L2               | several order book price levels per side, with the size resting at each |
+# | book event       | one atomic update to the order book, applied in full or not at all |
+# | timestamp repair | correcting times that arrive in the wrong unit, order, or zone |
+# | source hash      | the checksum of each input file, recorded so the ingest is traceable |
+# | YES contract     | the binary contract that pays 1.00 if the event happens and 0.00 if it does not |
+# | snapshot         | a named, checksummed pin of table versions, taken before any strategy exists |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
 
 # %% [markdown]
 # ## Download only what the recipe uses

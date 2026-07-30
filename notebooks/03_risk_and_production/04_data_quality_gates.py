@@ -13,6 +13,20 @@
 # database-level policy makes direct destructive writes *impossible to do
 # casually*, for humans and pipeline agents alike.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term            | meaning |
+# | --------------- | --- |
+# | staging table   | where a delivery lands first, so a broken file never touches production |
+# | gate            | a check that a delivery must pass before it is promoted |
+# | promotion       | moving validated data from staging into the production table |
+# | plan / apply    | stage a delete or replace, review its row counts and samples, then commit it |
+# | mutation policy | a database-level setting that blocks direct destructive writes |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import numpy as np
 import pandas as pd

@@ -21,6 +21,21 @@
 #    results, asserted,
 # 3. finish with a minimal run-registry pattern.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term              | meaning |
+# | ----------------- | --- |
+# | restatement       | a vendor correcting historical data after the fact |
+# | snapshot          | a named, checksummed pin of table versions; O(1) because it copies nothing |
+# | pin               | fixing a run's inputs to an exact version or snapshot, so a rerun reads the same bytes |
+# | Sharpe ratio      | annualized return divided by annualized volatility: reward per unit of risk |
+# | survivorship bias | testing only on assets that still exist, which deletes every failure from the sample |
+# | run registry      | a table recording what each run consumed, so a result can be traced back |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import hashlib
 import json

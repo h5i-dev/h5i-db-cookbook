@@ -16,6 +16,24 @@
 # 3. separate jumps from continuous variance with bipower variation,
 # 4. split real SPY variance into overnight and intraday parts.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term                 | meaning |
+# | -------------------- | --- |
+# | realized variance    | the sum of squared intraday returns; its square root is realized volatility |
+# | nonparametric        | estimated from the data alone, with no model of the return distribution |
+# | sampling interval    | the bar length the returns are computed over, and the main design choice here |
+# | bid-ask bounce       | trades alternating between bid and ask, which looks like volatility but is not |
+# | microstructure noise | the general term for that: observed price is true price plus a trading artifact |
+# | signature plot       | realized variance against sampling interval, which is how you pick a frequency |
+# | bipower variation    | a variance estimate built from adjacent absolute returns, so jumps barely enter it |
+# | jump                 | a price move too large to be part of the continuous diffusion, e.g. a gap on news |
+# | overnight return     | close to next open, which no intraday estimator sees |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import numpy as np
 import pandas as pd

@@ -16,6 +16,22 @@
 # at one site, and a partially-built pipeline is an ordinary Python value you
 # can pass around, extend and reuse.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term      | meaning |
+# | --------- | --- |
+# | lazy      | nothing executes until a terminal call such as `.collect()` |
+# | verb      | one builder method, e.g. `.filter()` or `.group_by()`, that extends the query |
+# | CTE       | a named subquery introduced by `WITH`, so a multi-step query stays readable |
+# | ASOF join | join each left row to the most recent right row at or before its timestamp |
+# | gapfill   | put an irregular series onto a regular time grid |
+# | panel     | a dataset with one row per asset per date |
+# | z-score   | how many standard deviations a value sits from its rolling mean |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import h5i_db
 from h5i_db import col, count_star, lit, sql_expr, time_bucket, vwap, when

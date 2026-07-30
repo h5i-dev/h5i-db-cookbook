@@ -5,6 +5,13 @@ the embedded, versioned time-series database for market data workloads.
 
 日本語版は [`notebooks_ja/`](notebooks_ja/README.md) にあります（コードは同一、解説のみ翻訳）.
 
+Written for two readers at once. Recipes assume no quant background: each opens
+with the professional problem it solves, then a **Terms used here** table
+defining only the jargon that recipe needs. If you already know the field, skip
+that cell. [GLOSSARY.md](GLOSSARY.md) collects every term in one place and
+suggests a reading order for each starting point
+([日本語版](GLOSSARY.ja.md)).
+
 ## Setup
 
 ```bash
@@ -110,16 +117,63 @@ pure-SQL tour, and a handful of queries stay SQL where no verb exists
 | [06 Order lifecycle and risk](notebooks/04_event_driven_backtesting/06_order_lifecycle_and_risk.ipynb) | Typed preflight, submit/amend/cancel commands, native account limits, explanations, and semantic verification |
 | [07 Python strategy callbacks](notebooks/04_event_driven_backtesting/07_python_strategy_callbacks.ipynb) | Stateful strategies, timers, fill-driven actions, stable strategy identity, and callback rerun verification |
 
+### 05 - Prediction markets
+
+Quant workflows specific to binary and categorical event contracts, where the
+payoff is bounded, the fee scales with `p*(1-p)`, and the sample is a few hundred
+markets rather than a few thousand days.
+
+| Recipe | What you learn |
+|---|---|
+| [01 Binary parity and the fee curve](notebooks/05_prediction_markets/01_binary_parity_and_fee_curves.ipynb) | YES+NO=1 arbitrage, the quadratic fee hurdle by price level, and settlement checked against the arithmetic |
+| [02 Probability calibration](notebooks/05_prediction_markets/02_probability_calibration.ipynb) | Reliability curves, Brier decomposition, log loss, benchmark forecasts, and a point-in-time proof of no label leakage |
+| [03 Favorite-longshot bias](notebooks/05_prediction_markets/03_favorite_longshot_bias.ipynb) | Hold-to-resolution returns by price bucket, both sides traded net of fees, threshold plateaus, and `sqrt(p(1-p))` vol scaling |
+| [04 Execution fidelity and depth](notebooks/05_prediction_markets/04_execution_fidelity_and_depth.ipynb) | Microprice and imbalance from snapshots, preflight refusing a queue claim, fill ratio against displayed depth, and a cost budget |
+| [05 Settlement and selection risk](notebooks/05_prediction_markets/05_settlement_and_selection_risk.ipynb) | Observability-gated settlement, why a time split fails on this panel, PBO, deflated Sharpe, and minimum track record length |
+| [06 Vendor data on-ramp](notebooks/05_prediction_markets/06_vendor_data_onramp.ipynb) | Vendor Parquet into canonical tables: market specs, layouts as data, content-addressed re-ingest, coverage, and the CLI |
+| [07 The whole loop, once](notebooks/05_prediction_markets/07_end_to_end_workflow.ipynb) | Ingest to decision: pin, strategy pack, walk-forward with a shortlist holdout, basket report, Brier advantage, deflated Sharpe, verify |
+| [08 The whole loop on real books](notebooks/05_prediction_markets/08_real_polymarket_end_to_end.ipynb) | Real tick-level Polymarket data end to end: eleven rules tested, all lose, and the cost budget explains why |
+
 ## Layout
 
 ```
 cookbook_utils/     shared synthetic-data generators + cached Yahoo downloader
-notebooks/          44 recipes × (.py source ⇄ executed .ipynb)
-notebooks_ja/       Japanese translations of the established recipe set
+notebooks/          54 recipes × (.py source ⇄ executed .ipynb)
+notebooks_ja/       the same 54 recipes, Japanese prose, byte-identical code
+GLOSSARY.md         every term the recipes use (GLOSSARY.ja.md in Japanese)
 scripts/            build tooling (py → executed ipynb)
 data/cache/         cached real market data (parquet)
 data/dbs/           databases created by recipes (disposable)
 ```
+
+## Fetching your own Polymarket data
+
+The recipes run on a synthetic mirror or a cached archive so they work offline.
+To pull live data yourself:
+
+```bash
+python scripts/fetch_polymarket.py markets --open --limit 50 \
+    --out data/cache/pm-specs.json
+python scripts/fetch_polymarket.py books --specs data/cache/pm-specs.json \
+    --out data/cache/pm-mirror
+
+python -m h5i_db.venues markets market.db data/cache/pm-specs.json
+python -m h5i_db.venues ingest  market.db data/cache/pm-specs.json \
+    --root data/cache/pm-mirror
+```
+
+No API key needed; both endpoints are public and read-only. Responses are cached,
+so re-running costs nothing, and the ingest is content-addressed, so it replays
+rather than duplicating.
+
+Two limits that are properties of the API, not of the tooling. The book endpoint
+serves **live markets only**, so `--closed` is the right flag for definitions and
+the wrong one for books. And historical coverage is price *points*, not books, so
+a depth or queue study needs a captured archive of the kind recipe 05/08 uses.
+
+`scripts/test_fetch_polymarket.py` covers pagination, retry and backoff, the
+cache, response-shape validation, and whether the mirror it writes is ingestible.
+The transport is injected, so those run offline.
 
 ## Rebuilding the notebooks
 

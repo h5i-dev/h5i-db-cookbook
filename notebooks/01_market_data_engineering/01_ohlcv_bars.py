@@ -20,6 +20,21 @@
 # 3. persist the 5m bars as a versioned `bars_5m` table,
 # 4. validate the SQL bars against a pandas reference, field by field.
 
+# %% [markdown]
+# ## Terms used here
+#
+# | term          | meaning |
+# | ------------- | --- |
+# | tick          | one event on a market data feed, usually a trade or a quote update |
+# | OHLCV bar     | ticks aggregated into a fixed interval: open, high, low, close, volume |
+# | `time_bucket` | truncate timestamps to a grid, optionally in a named timezone |
+# | session       | one trading day as the exchange defines it, e.g. 09:30-16:00 New York |
+# | DST           | daylight saving time; sessions are fixed in local time, so their UTC offset shifts |
+# | VWAP          | volume-weighted average price, the average price the whole market paid |
+#
+# New to any of these? [GLOSSARY.md](../../GLOSSARY.md) defines them at more
+# length, along with every other term the cookbook uses.
+
 # %%
 import numpy as np
 import pandas as pd
