@@ -86,6 +86,42 @@ bars  = cu.fetch_intraday(["SPY","QQQ"], period="30d", interval="1h")
 ```
 All tables: `ts` is `timestamp[us, tz=UTC]`, sorted ascending.
 
+Backtest fixtures are separate: their time column is `ts_init` and it is
+`timestamp[ns]`, tz-naive, because that is the canonical backtest schema. Every
+raw-unit argument against them (`read(time_end=...)`, plan ranges) is therefore
+**nanoseconds**, not microseconds.
+
+```python
+fix = cu.make_backtest_fixture(steps=180)             # one market: instruments, book_deltas, trades
+panel = cu.make_prediction_markets(n_markets=240, steps=48, seed=11)
+#   -> instruments, book_deltas, trades, resolutions for a panel of binary markets.
+#   Quotes carry an injected favorite-longshot bias (longshot_bias=), the NO book is
+#   the complement plus an oscillating basis (basis_amplitude=), and winners are
+#   assigned by systematic sampling so calibration is measurable at panel size.
+#   Trading runs to expiry; the result becomes observable settlement_lag_minutes
+#   later; tail_steps further snapshots quote the resolved book at ~1.00/~0.00 so a
+#   full-window replay reaches settlement and a truncated one does not.
+truth = cu.market_truth(panel)                        # instrument_id, yes_won - the answer key
+```
+
+Two invariants of that fixture, both load-bearing and both easy to break when
+writing a new generator: `book_deltas.event_index` must increase with `ts_init`
+(emit rows time-major, not instrument-major) and rows sharing an `event_index`
+must describe ONE outcome. Violate either and events mis-group into books that
+never existed, with no error.
+
+**Signal timing.** Stamp a signal strictly after the quote it was decided from
+(`decision_ts + timedelta(microseconds=1)`). A signal sharing a timestamp with a
+book event may match against the *previous* snapshot, and which one it gets
+depends on merge order among equal timestamps. Submitting after the decision
+quote fills at exactly the bid/ask you decided from, which is both deterministic
+and free of look-ahead. Recipes 05/01-05/05 all rely on this.
+
+**Post-resolution rows.** `make_prediction_markets` keeps quoting after the result
+is observable, so any scan measuring price behaviour must stop at
+`expiration_ns`; otherwise the resolution jump is scored as a price move and
+dominates every volatility estimate.
+
 Real-data calls are cached by exact argument set. These four are pre-cached -
 recipes should use one of them verbatim (then subset in SQL/pandas), not
 invent new argument combinations:

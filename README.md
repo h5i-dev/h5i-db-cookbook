@@ -110,11 +110,25 @@ pure-SQL tour, and a handful of queries stay SQL where no verb exists
 | [06 Order lifecycle and risk](notebooks/04_event_driven_backtesting/06_order_lifecycle_and_risk.ipynb) | Typed preflight, submit/amend/cancel commands, native account limits, explanations, and semantic verification |
 | [07 Python strategy callbacks](notebooks/04_event_driven_backtesting/07_python_strategy_callbacks.ipynb) | Stateful strategies, timers, fill-driven actions, stable strategy identity, and callback rerun verification |
 
+### 05 - Prediction markets
+
+Quant workflows specific to binary and categorical event contracts, where the
+payoff is bounded, the fee scales with `p*(1-p)`, and the sample is a few hundred
+markets rather than a few thousand days.
+
+| Recipe | What you learn |
+|---|---|
+| [01 Binary parity and the fee curve](notebooks/05_prediction_markets/01_binary_parity_and_fee_curves.ipynb) | YES+NO=1 arbitrage, the quadratic fee hurdle by price level, and settlement checked against the arithmetic |
+| [02 Probability calibration](notebooks/05_prediction_markets/02_probability_calibration.ipynb) | Reliability curves, Brier decomposition, log loss, benchmark forecasts, and a point-in-time proof of no label leakage |
+| [03 Favorite-longshot bias](notebooks/05_prediction_markets/03_favorite_longshot_bias.ipynb) | Hold-to-resolution returns by price bucket, both sides traded net of fees, threshold plateaus, and `sqrt(p(1-p))` vol scaling |
+| [04 Execution fidelity and depth](notebooks/05_prediction_markets/04_execution_fidelity_and_depth.ipynb) | Microprice and imbalance from snapshots, preflight refusing a queue claim, fill ratio against displayed depth, and a cost budget |
+| [05 Settlement and selection risk](notebooks/05_prediction_markets/05_settlement_and_selection_risk.ipynb) | Observability-gated settlement, why a time split fails on this panel, PBO, deflated Sharpe, and minimum track record length |
+
 ## Layout
 
 ```
 cookbook_utils/     shared synthetic-data generators + cached Yahoo downloader
-notebooks/          44 recipes × (.py source ⇄ executed .ipynb)
+notebooks/          51 recipes × (.py source ⇄ executed .ipynb)
 notebooks_ja/       Japanese translations of the established recipe set
 scripts/            build tooling (py → executed ipynb)
 data/cache/         cached real market data (parquet)
