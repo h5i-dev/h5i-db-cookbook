@@ -16,6 +16,21 @@ from .synthetic import (
 )
 from .real_data import fetch_daily, fetch_intraday, SP500_EXAMPLES
 from .dbs import db_path, fresh_db
+from .backtest_data import (
+    BOOK_DELTAS_SCHEMA,
+    INSTRUMENTS_SCHEMA,
+    TRADES_SCHEMA,
+    make_backtest_fixture,
+)
+from .kaggle_polymarket import (
+    DATASET as KAGGLE_POLYMARKET_DATASET,
+    LICENSE as KAGGLE_POLYMARKET_LICENSE,
+    KaggleSample,
+    download_commands as kaggle_download_commands,
+    load_kaggle_sample,
+    missing_files as kaggle_missing_files,
+    source_manifest as kaggle_source_manifest,
+)
 
 __all__ = [
     "make_trades",
@@ -31,4 +46,15 @@ __all__ = [
     "SP500_EXAMPLES",
     "db_path",
     "fresh_db",
+    "BOOK_DELTAS_SCHEMA",
+    "INSTRUMENTS_SCHEMA",
+    "TRADES_SCHEMA",
+    "make_backtest_fixture",
+    "KAGGLE_POLYMARKET_DATASET",
+    "KAGGLE_POLYMARKET_LICENSE",
+    "KaggleSample",
+    "kaggle_download_commands",
+    "kaggle_missing_files",
+    "kaggle_source_manifest",
+    "load_kaggle_sample",
 ]

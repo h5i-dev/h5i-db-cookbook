@@ -22,10 +22,13 @@ python notebooks/00_fundamentals/01_quickstart.py
 # ... or open the .ipynb next to it
 ```
 
-Real-data recipes download from Yahoo Finance on first run and cache to
-`data/cache/`, so everything is reproducible offline afterwards. Recipes that
-need tick-level data use realistic synthetic generators (`cookbook_utils/`),
-deterministic given a seed.
+Real-data recipes cache disposable inputs under `data/cache/`, so reruns are
+offline after the first download. Recipes 04/04 and 04/05 use an authenticated
+Kaggle CLI to fetch a bounded (~165 MB compressed)
+[Polymarket sample](https://www.kaggle.com/datasets/marvingozo/polymarket-tick-level-orderbook-dataset)
+and record the exact file hashes. That source is CC BY-NC 4.0; review the
+license before using derived work. Other tick-level recipes use deterministic
+realistic generators from `cookbook_utils/`.
 
 Queries are written with the lazy DataFrame builder (`db.table(...)` plus
 verbs) rather than SQL strings, because a query you can hold in a variable is
@@ -95,12 +98,24 @@ pure-SQL tour, and a handful of queries stay SQL where no verb exists
 | [10 Performance tuning](notebooks/03_risk_and_production/10_performance_tuning.ipynb) | Pruning, compaction, resource limits, batching, and why it's fast |
 | [11 arrival-delta](notebooks/03_risk_and_production/11_arrival_delta.ipynb) | Pricing hindsight: `arrival_delta` across a sweep, and the two ways it misleads |
 
+### 04 - Event-driven backtesting
+
+| Recipe | What you learn |
+|---|---|
+| [01 First event-driven run](notebooks/04_event_driven_backtesting/01_first_event_driven_run.ipynb) | Signals as order intent; pinned replay; fills, positions, and equity on a run fork |
+| [02 Execution realism](notebooks/04_event_driven_backtesting/02_execution_realism.ipynb) | Fees, slippage, latency, queue position, and implementation-shortfall sensitivity |
+| [03 Reproducible operations](notebooks/04_event_driven_backtesting/03_reproducible_backtest_operations.ipynb) | Stable snapshot reruns, late data, coverage gates, and audit manifests |
+| [04 Kaggle Polymarket data contract](notebooks/04_event_driven_backtesting/04_kaggle_polymarket_data_contract.ipynb) | Bounded downloads, source hashes, timestamp repair, canonical L2 snapshots, and capability limits |
+| [05 Kaggle Polymarket replay](notebooks/04_event_driven_backtesting/05_kaggle_polymarket_replay.ipynb) | Causal features on real books, event-driven fills, and fee/latency/slippage sensitivity |
+| [06 Order lifecycle and risk](notebooks/04_event_driven_backtesting/06_order_lifecycle_and_risk.ipynb) | Typed preflight, submit/amend/cancel commands, native account limits, explanations, and semantic verification |
+| [07 Python strategy callbacks](notebooks/04_event_driven_backtesting/07_python_strategy_callbacks.ipynb) | Stateful strategies, timers, fill-driven actions, stable strategy identity, and callback rerun verification |
+
 ## Layout
 
 ```
 cookbook_utils/     shared synthetic-data generators + cached Yahoo downloader
-notebooks/          38 recipes × (.py source ⇄ executed .ipynb)
-notebooks_ja/       the same 38 recipes, prose translated to Japanese
+notebooks/          44 recipes × (.py source ⇄ executed .ipynb)
+notebooks_ja/       Japanese translations of the established recipe set
 scripts/            build tooling (py → executed ipynb)
 data/cache/         cached real market data (parquet)
 data/dbs/           databases created by recipes (disposable)
