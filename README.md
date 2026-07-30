@@ -138,6 +138,35 @@ data/cache/         cached real market data (parquet)
 data/dbs/           databases created by recipes (disposable)
 ```
 
+## Fetching your own Polymarket data
+
+The recipes run on a synthetic mirror or a cached archive so they work offline.
+To pull live data yourself:
+
+```bash
+python scripts/fetch_polymarket.py markets --open --limit 50 \
+    --out data/cache/pm-specs.json
+python scripts/fetch_polymarket.py books --specs data/cache/pm-specs.json \
+    --out data/cache/pm-mirror
+
+python -m h5i_db.venues markets market.db data/cache/pm-specs.json
+python -m h5i_db.venues ingest  market.db data/cache/pm-specs.json \
+    --root data/cache/pm-mirror
+```
+
+No API key needed; both endpoints are public and read-only. Responses are cached,
+so re-running costs nothing, and the ingest is content-addressed, so it replays
+rather than duplicating.
+
+Two limits that are properties of the API, not of the tooling. The book endpoint
+serves **live markets only**, so `--closed` is the right flag for definitions and
+the wrong one for books. And historical coverage is price *points*, not books, so
+a depth or queue study needs a captured archive of the kind recipe 05/08 uses.
+
+`scripts/test_fetch_polymarket.py` covers pagination, retry and backoff, the
+cache, response-shape validation, and whether the mirror it writes is ingestible.
+The transport is injected, so those run offline.
+
 ## Rebuilding the notebooks
 
 ```bash
