@@ -104,11 +104,22 @@ panel = cu.make_prediction_markets(n_markets=240, steps=48, seed=11)
 truth = cu.market_truth(panel)                        # instrument_id, yes_won - the answer key
 ```
 
-Two invariants of that fixture, both load-bearing and both easy to break when
-writing a new generator: `book_deltas.event_index` must increase with `ts_init`
-(emit rows time-major, not instrument-major) and rows sharing an `event_index`
-must describe ONE outcome. Violate either and events mis-group into books that
-never existed, with no error.
+One invariant of that fixture is load-bearing: rows sharing an `event_index`
+must describe ONE outcome of ONE instrument. One event is one book, so a
+snapshot spanning both outcomes describes a book that never existed, holding
+both sides' levels with a best ask belonging to the other outcome.
+
+h5i-db refuses this as of the fix in `store.rs::read_book_events`
+("one event describes one outcome of one instrument"). Older builds accepted it
+silently and filled against the wrong side: a YES buy paid the NO ask, with no
+error anywhere. If you are on a Python extension built before that fix, the
+failure is silent, so check the rule rather than relying on the engine to.
+
+`event_index` values need only *change* between events; they do not have to
+increase with `ts_init`. Grouping is by row contiguity terminated by `is_last`,
+and an unterminated event is caught explicitly. A generator that emits
+instrument-major (so the index walks backwards through time) still produces
+correct books.
 
 **Signal timing.** Stamp a signal strictly after the quote it was decided from
 (`decision_ts + timedelta(microseconds=1)`). A signal sharing a timestamp with a
