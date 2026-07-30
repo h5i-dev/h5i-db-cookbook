@@ -227,7 +227,12 @@ def account(result: backtest.BacktestResult) -> dict[str, float]:
     summary = result.summary()
     settled = float(positions.settlement_pnl.fillna(0.0).sum())
     fees = float(summary["commissions"])
-    return {"fills": summary["fills"], "settled": settled, "fees": fees, "net": settled - fees}
+    # realized_pnl already carries the commissions, so the total is
+    # realized + settlement. Here nothing closes before resolution, which makes
+    # realized exactly -fees and the two spellings agree; they part company the
+    # moment a rule round-trips, so use the one that always holds.
+    net = float(summary["realized_pnl"]) + settled
+    return {"fills": summary["fills"], "settled": settled, "fees": fees, "net": net}
 
 
 for label, result in (("gross", gross), ("kalshi fees", net)):

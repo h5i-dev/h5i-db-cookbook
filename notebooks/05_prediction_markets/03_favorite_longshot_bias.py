@@ -191,13 +191,17 @@ def account(result: backtest.BacktestResult) -> dict[str, float]:
     settled = float(positions.settlement_pnl.fillna(0.0).sum())
     fees = float(result.summary()["commissions"])
     capital = float((fills.price * fills.quantity).sum())
+    # realized_pnl already nets out commissions, so total = realized + settled.
+    # These entries are held to resolution, so realized is exactly -fees and the
+    # two agree; a rule that closes positions would make them differ.
+    net = float(result.summary()["realized_pnl"]) + settled
     return {
         "fills": len(fills),
         "capital": capital,
         "settled": settled,
         "fees": fees,
-        "net": settled - fees,
-        "net_return_pct": (settled - fees) / capital * 100 if capital else float("nan"),
+        "net": net,
+        "net_return_pct": net / capital * 100 if capital else float("nan"),
     }
 
 

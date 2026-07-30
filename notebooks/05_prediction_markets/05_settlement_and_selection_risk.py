@@ -234,7 +234,7 @@ for name, members in folds.items():
     positions = result.positions.to_pandas()
     fills = result.fills.to_pandas()
     capital = float((fills.price * fills.quantity).sum())
-    net = float(positions.settlement_pnl.fillna(0.0).sum() - result.summary()["commissions"])
+    net = float(result.summary()["realized_pnl"] + positions.settlement_pnl.fillna(0.0).sum())
     fold_report.append(
         {
             "fold": name,
@@ -297,7 +297,7 @@ for threshold in thresholds:
         "threshold": float(threshold),
         "markets": len(members),
         "equity": equity.set_index("ts").equity if "equity" in equity else None,
-        "net": float(positions.settlement_pnl.fillna(0.0).sum() - result.summary()["commissions"]),
+        "net": float(result.summary()["realized_pnl"] + positions.settlement_pnl.fillna(0.0).sum()),
     }
 print(f"{len(curves)} trials")
 print(pd.DataFrame([{k: v[k] for k in ("threshold", "markets", "net")} for v in curves.values()]).to_string(index=False))

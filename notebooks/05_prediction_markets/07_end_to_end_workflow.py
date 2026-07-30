@@ -265,19 +265,24 @@ print(f"marked to last quote  {marked:>12,.2f}")
 print(f"settled at resolution {settled:>12,.2f}")
 print(f"settlement adjustment {settled - marked:>+12,.2f}")
 print(f"fees                  {summary['commissions']:>12,.2f}")
-print(f"net                   {settled - summary['commissions']:>12,.2f}")
+# realized_pnl is already net of commissions, so the total is realized +
+# settlement. Subtracting commissions again double-counts them, and settlement
+# alone drops every closed round trip.
+print(f"net                   {summary['realized_pnl'] + settled:>12,.2f}")
 print(f"settlement applied:   {bool(final.run.to_pandas().settlement_applied.iloc[0])}")
 
 # %% [markdown]
-# Read those two lines together before believing the total. `realized_pnl` is
-# what the rule earned on trades it closed, and it is negative: the crossings
-# lost money. The positive total comes from `settlement_pnl`, which is what the
-# positions still open at resolution turned into.
+# Read those two lines together before believing either. `realized_pnl` is what
+# the rule earned on trades it closed, and it is firmly negative: the crossings
+# lost money. `settlement_pnl` is what the positions still open at the end turned
+# into, and it is positive, but nowhere near enough to cover the trading loss.
 #
-# That is a real distinction and not a rounding one. A rule whose trading is
-# unprofitable and whose total is positive was paid by what it happened to be
-# holding when the markets resolved, which is a different claim, and one that
-# needs far more markets before it means anything.
+# The total is the sum of the two, and the arithmetic is worth stating because
+# the intuitive alternative is wrong. `realized_pnl` already carries the
+# commissions, so subtracting them again double-counts; and settlement on its own
+# ignores every position the rule opened and closed, which for a crossover rule
+# is nearly all of them. Only when nothing closes before resolution do the two
+# spellings agree, which is exactly the case that hides the mistake.
 
 # %% [markdown]
 # ## 7. Was the probability any better than the price?
@@ -430,11 +435,15 @@ print(f"data pin      {final.config.data.snapshot}")
 # - Walk-forward with `TopK` keeps the holdout a holdout. Check that only the
 #   shortlist has out-of-sample columns; if everything does, you have two
 #   training sets.
-# - Read `realized_pnl` and `settlement_pnl` together. Here the first is
-#   negative and the second positive, so the rule was paid by what it held at
-#   resolution rather than by what it traded. `market_exit_pnl` beside them says
-#   how much of the total depends on holding at all, and settlement only applied
-#   because the replay reached past the observability instant.
+# - The total is `realized_pnl + settlement_pnl`, and nothing else. The first
+#   already nets out commissions, so subtracting them again double-counts, and
+#   settlement alone silently drops every position the rule closed. Here trading
+#   lost more than settlement returned, so the run is a loss; a
+#   hold-to-resolution rule would make the two spellings agree and hide the
+#   distinction entirely.
+# - `market_exit_pnl` beside them says how much of the result depends on holding
+#   at all, and settlement only applied because the replay reached past the
+#   observability instant.
 # - Choose a ranking metric that is closed at the window edge. `final_cash`
 #   inside a fold ranks candidates by deployed capital, not by performance.
 # - `brier_advantage` asks whether the forecast beat the price, which no equity
