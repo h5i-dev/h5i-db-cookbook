@@ -88,6 +88,8 @@ pure-SQL tour, and a handful of queries stay SQL where no verb exists
 | [09 Lead–lag analysis](notebooks/02_alpha_research/09_lead_lag.ipynb) | Cross-asset lead–lag with ASOF alignment |
 | [10 Portfolio rebalancing](notebooks/02_alpha_research/10_portfolio_rebalancing.ipynb) | Versioned holdings, turnover control, rebalance audit trail |
 | [11 Retrieval-augmented forecasting](notebooks/02_alpha_research/11_retrieval_augmented_forecasting.ipynb) | Embeddings as a column, `array_distance` top-k, and why time-series RAG leaks |
+| [12 Trend following](notebooks/02_alpha_research/12_trend_following.ipynb) | Time-series momentum, volatility targeting with an overlay, turnover budget, crisis-alpha claim tested |
+| [13 Mean reversion](notebooks/02_alpha_research/13_mean_reversion.ipynb) | A short-horizon signal that is not there, and the required gross return that says so |
 
 ### 03 - Risk & production
 
@@ -116,6 +118,12 @@ pure-SQL tour, and a handful of queries stay SQL where no verb exists
 | [05 Kaggle Polymarket replay](notebooks/04_event_driven_backtesting/05_kaggle_polymarket_replay.ipynb) | Causal features on real books, event-driven fills, and fee/latency/slippage sensitivity |
 | [06 Order lifecycle and risk](notebooks/04_event_driven_backtesting/06_order_lifecycle_and_risk.ipynb) | Typed preflight, submit/amend/cancel commands, native account limits, explanations, and semantic verification |
 | [07 Python strategy callbacks](notebooks/04_event_driven_backtesting/07_python_strategy_callbacks.ipynb) | Stateful strategies, timers, fill-driven actions, stable strategy identity, and callback rerun verification |
+| [08 Equity bars to event-driven](notebooks/04_event_driven_backtesting/08_equity_bars_to_event_driven.ipynb) | A book synthesized from bars, `target_positions`, and a vectorized-versus-replay reconciliation that closes to the cent |
+| [09 Market making and inventory](notebooks/04_event_driven_backtesting/09_market_making_inventory.ipynb) | Quoting from deltas, inventory skew, being run over, latency against cancel-and-replace, markout |
+| [10 Execution algorithms](notebooks/04_event_driven_backtesting/10_execution_algorithms.ipynb) | TWAP, VWAP and POV against arrival price, with the opportunity cost of not finishing |
+| [11 Calibrating costs from fills](notebooks/04_event_driven_backtesting/11_calibrating_costs_from_fills.ipynb) | `quant.costs`: effective spread, square-root impact fit, and charging it in a cheaper backtest |
+| [12 Searching a strategy space](notebooks/04_event_driven_backtesting/12_searching_a_strategy_space.ipynb) | One signals table per candidate, `RandomSearch` with walk-forward and `TopK`, the trial ledger, one basket report |
+| [13 Replaying an account ledger](notebooks/04_event_driven_backtesting/13_replaying_an_account_ledger.ipynb) | A ledger compiled into intent, and a per-market reconciliation of what the book refused |
 
 ### 05 - Prediction markets
 
@@ -134,12 +142,26 @@ markets rather than a few thousand days.
 | [07 The whole loop, once](notebooks/05_prediction_markets/07_end_to_end_workflow.ipynb) | Ingest to decision: pin, strategy pack, walk-forward with a shortlist holdout, basket report, Brier advantage, deflated Sharpe, verify |
 | [08 The whole loop on real books](notebooks/05_prediction_markets/08_real_polymarket_end_to_end.ipynb) | Real tick-level Polymarket data end to end: eleven rules tested, all lose, and the cost budget explains why |
 
+### 06 - Performance analytics
+
+The `h5i_db.quant` layer: the maintained answer to `alphalens` and `pyfolio`,
+with the part neither could offer. Every statistic is a query against the engine
+carrying the data version it was computed from, and a result that was not pinned
+refuses to verify.
+
+| Recipe | What you learn |
+|---|---|
+| [01 Tearsheets & performance stats](notebooks/06_performance_analytics/01_tearsheets_and_performance_stats.ipynb) | `ReturnSeries` stats matching empyrical, drawdown episodes, rolling beta, `from_levels` off a run, and why `verify` refuses |
+| [02 Factor panels & reports](notebooks/06_performance_analytics/02_factor_panels_and_reports.ipynb) | `build_panel`: loss accounting, IC decay, quantile returns, turnover, sector neutrality, one HTML report |
+| [03 Cross-validation without leakage](notebooks/06_performance_analytics/03_cross_validation_without_leakage.ipynb) | Purged k-fold, embargo, CPCV distributions, walk-forward, then PBO and the deflated Sharpe on the winner |
+| [04 Sweeps, verification, restatements](notebooks/06_performance_analytics/04_sweeps_verification_restatements.ipynb) | `quant.sweep` one fork per trial, provenance digests, and what a vendor revision did to the answer |
+
 ## Layout
 
 ```
 cookbook_utils/     shared synthetic-data generators + cached Yahoo downloader
-notebooks/          54 recipes × (.py source ⇄ executed .ipynb)
-notebooks_ja/       the same 54 recipes, Japanese prose, byte-identical code
+notebooks/          66 recipes × (.py source ⇄ executed .ipynb)
+notebooks_ja/       the same 66 recipes, Japanese prose, byte-identical code
 GLOSSARY.md         every term the recipes use (GLOSSARY.ja.md in Japanese)
 scripts/            build tooling (py → executed ipynb)
 data/cache/         cached real market data (parquet)

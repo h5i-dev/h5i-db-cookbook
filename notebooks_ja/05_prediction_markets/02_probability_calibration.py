@@ -46,7 +46,8 @@ db = h5i_db.Database(cu.fresh_db("05_probability_calibration"), create=True)
 # |---|---|---|
 # | `ts_init` | `timestamp[ns]` | 結果が**観測可能**になった時刻。出来事が起きた時刻ではない |
 # | `instrument_id` | `string` | マーケット |
-# | `winner_outcome` | `uint16` | 0 = YES の勝ち、1 = NO の勝ち |
+# | `kind` | `string` | `winner`／`split`／`void`。このフィクスチャはすべて `winner` |
+# | `outcome` | `uint16` | 勝った側。0 = YES の勝ち、1 = NO の勝ち |
 #
 # 最初の行にあるこの区別が、規律のすべてです。選挙は開票の夜に決まりますが、確定の宣言は数時間後に
 # なります。早いほうの瞬間で決済すると、誰も受け取れなかった利益を計上してしまいます。
