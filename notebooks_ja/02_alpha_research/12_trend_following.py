@@ -101,7 +101,7 @@ scaled = (
 )
 panel = scaled.to_pandas().dropna()
 print(f"{len(panel):,} symbol-days with a signal and a volatility estimate")
-panel.head(3).round(4)
+panel.head(3).set_index("ts").round(4)
 
 # %% [markdown]
 # ## 3. ポジション

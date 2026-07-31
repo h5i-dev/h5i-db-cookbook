@@ -158,7 +158,9 @@ stats = pd.DataFrame(
         "benchmark": benchmark.stats(),
     }
 )
-stats.round(4)
+# The frame mixes timestamps with floats, so round the floats and leave the
+# rest alone rather than asking pandas to round a datetime.
+stats.map(lambda value: round(value, 4) if isinstance(value, float) else value)
 
 # %% [markdown]
 # このうち3つは、単独よりも合わせて読む価値があります。`stability` は累積対数リターンを
@@ -215,7 +217,7 @@ rolling = (
     .dropna()
 )
 print(f"{len(rolling):,} complete {window}-day windows")
-rolling.tail(3).round(3)
+rolling.tail(3).set_index("ts").round(3)
 
 # %%
 fig, axes = plt.subplots(2, 1, figsize=(9, 6), sharex=True)

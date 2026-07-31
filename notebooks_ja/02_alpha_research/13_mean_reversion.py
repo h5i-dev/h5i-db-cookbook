@@ -75,7 +75,7 @@ signal_frame = scored.select(
 )
 panel_frame = signal_frame.sort(["ts", "asset"]).to_pandas()
 print(f"{len(panel_frame):,} symbol-days")
-panel_frame.head(3).round(4)
+panel_frame.head(3).set_index("ts").round(4)
 
 # %% [markdown]
 # ## 2. そもそも存在するのか
