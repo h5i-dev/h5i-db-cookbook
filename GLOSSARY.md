@@ -98,6 +98,21 @@ individual orders and trades, rather than the daily closes most models use.
   the spread and trades immediately. Venues usually charge them differently.
 - **Fill.** An execution against your order. A **partial fill** is less than the
   full quantity. **Fill ratio** is the fraction you got.
+- **Half-spread.** Half the gap between bid and ask. What crossing costs per
+  unit, and the smallest honest cost a backtest can charge.
+- **Market maker.** A trader who posts both a bid and an offer and earns the gap
+  between them, rather than forecasting direction.
+- **Inventory.** The position a maker is left holding after being filled on one
+  side. It is the risk the job actually carries.
+- **Inventory skew.** Shifting both quotes so the side that reduces inventory is
+  more attractive. It buys risk reduction with fill rate, not with return.
+- **Adverse selection.** Being filled precisely when the price is about to move
+  against you, because the person trading with you knew something.
+- **Markout.** The mid a fixed interval after a fill, signed so positive means
+  the fill aged well. The standard way to price adverse selection.
+- **Amend.** Changing a live order's price or size in place rather than
+  cancelling and resubmitting. Under latency the difference decides whether your
+  quotes exist at all.
 - **Signed volume.** Trade volume with a sign: positive when the buyer was the
   aggressor, negative when the seller was.
 - **Buyer-initiated / seller-initiated.** Which side crossed the spread to make
@@ -290,6 +305,83 @@ individual orders and trades, rather than the daily closes most models use.
 - **Transaction costs.** Everything that makes the traded price worse than the
   decision price: commissions, fees, spread and impact.
 - **Commission.** The broker's or venue's explicit per-trade charge.
+- **Vectorized backtest.** P&L computed as signal times the return that
+  followed, with no order book involved. Fast, and silent about execution.
+- **Target position.** The holding a strategy wants, as opposed to the orders
+  that get there. Converting one to the other is where a research vector becomes
+  order intent.
+- **Formation date.** The date whose data produced the signal, as distinct from
+  the date the resulting order could reach the market.
+- **Reconciliation.** Accounting for every unit of difference between two
+  calculations of the same thing, until the residual is zero or named.
+- **Parent order.** The full quantity a desk has been asked to trade. The child
+  orders it is worked with are **slices**.
+- **Arrival price.** The mid at the instant the decision was made. The benchmark
+  an execution algorithm cannot game by trading later.
+- **POV (participation of volume).** Trading a fixed fraction of whatever
+  prints, so the schedule follows the market rather than the clock.
+- **Opportunity cost.** What the shares an algorithm failed to buy would have
+  cost to buy at the end. The half of implementation shortfall that rewards
+  algorithms for not trading when it is left out.
+- **Participation rate.** Order size as a fraction of the size displayed at the
+  touch. The natural x-axis for a cost model.
+- **Square-root law.** The empirical shape of market impact: cost grows roughly
+  with the square root of size, not linearly.
+- **Time-series momentum.** Going long an asset that has risen against its own
+  past and short one that has fallen, with no comparison between assets.
+- **Volatility scaling.** Sizing each position inversely to its own volatility
+  so every asset contributes comparable risk. A **volatility target** is the
+  portfolio-level version.
+- **Crisis alpha.** The claim that trend following pays off in the worst periods
+  for markets. A monthly claim; the daily version rarely survives testing.
+- **Plateau.** A range of parameter values that all work, as opposed to a single
+  peak. The weakest evidence worth having that a parameter was chosen rather
+  than fitted.
+- **Dollar neutral.** The same amount long as short, so the market's direction
+  cancels out of the P&L.
+- **No-trade band.** Leaving a position alone while the change in its target is
+  too small to pay for the trade. The standard lever on turnover.
+- **Break-even cost.** The trading cost at which a strategy's net return is
+  exactly zero. For fast strategies it is the number that decides everything.
+- **Required gross return.** Turnover times cost: what a strategy must earn
+  before the signal matters at all.
+- **Forward return.** The return over the next *n* bars, which is what a factor
+  is scored against.
+- **Quantile bucket.** Assets split into equal-count groups by factor value on
+  each date. The **quantile spread** is the top bucket minus the bottom.
+- **Rank autocorrelation.** How stable an asset's factor rank is from one date
+  to the next. Low values mean high turnover before any portfolio is built.
+- **Group neutral.** Comparing assets only against others in their own sector,
+  which turns a sector bet into a testable claim.
+- **Label.** The outcome an observation is scored against, and its **horizon**
+  is how many observations forward it reaches.
+- **Purging.** Dropping training rows whose label overlaps the test block. With
+  the embargo, it is what makes cross-validation legitimate on a time series.
+- **CPCV.** Combinatorial purged cross-validation: testing on every combination
+  of blocks, so the output is a distribution of results rather than one number.
+- **Grid search / random search.** Enumerating every parameter combination,
+  versus drawing from ranges. Random search wins when the space is wide and most
+  axes do not matter.
+- **Trial ledger.** A record of every scored configuration, keyed by what it
+  read and did, so the trial count an overfitting correction needs is counted
+  rather than asserted.
+- **Ledger replay.** Compiling an account's published trades into intent and
+  letting the historical book accept or refuse each one. Where it refuses is the
+  finding.
+- **Immediate-or-cancel (IOC).** Fill whatever is available now and cancel the
+  rest.
+- **Reduce-only.** An order that may only shrink a position, never open the
+  opposite one.
+- **Returns series.** One simple, non-cumulative return per period. The minimum
+  input every performance statistic needs.
+- **Annualization factor.** How many periods make a year: 252 for daily bars, 12
+  for monthly, 24 x 365 for hourly crypto.
+- **Sortino ratio.** Like the Sharpe, but dividing by downside volatility only.
+- **Calmar ratio.** Annual return divided by the worst drawdown.
+- **Tearsheet.** The standard one-page performance report: headline statistics,
+  cumulative return, drawdown, rolling risk.
+- **Provenance.** The pin, parameters and query that produced a number, hashed
+  into a **digest** so two results can be compared exactly.
 
 ## Prediction markets
 
@@ -438,3 +530,9 @@ and 0.00 if it does not, so its price reads directly as a probability.
   orders, fills, positions and equity into, so runs never collide.
 - **Preflight.** A check that rejects an unsupported or unsafe request before it
   reaches the engine, for example a queue-position claim on snapshot-only data.
+- **Sweep fork.** The same idea one level up: `quant.sweep` gives every trial in
+  a parameter grid its own copy-on-write branch, so trials cannot contaminate
+  each other and one query compares them all.
+- **Basket report.** One self-contained document assembled from many runs'
+  stored tables, with no re-simulation. Panels it refuses to draw are recorded
+  rather than silently thinned.

@@ -119,11 +119,277 @@ def make_backtest_fixture(
     }
 
 
+BARS_SCHEMA = pa.schema(
+    [
+        pa.field("ts_init", pa.timestamp("ns"), nullable=False),
+        pa.field("ts_event", pa.timestamp("ns"), nullable=False),
+        pa.field("instrument_id", pa.string(), nullable=False),
+        pa.field("outcome", pa.uint16(), nullable=False),
+        pa.field("open", pa.float64(), nullable=False),
+        pa.field("high", pa.float64(), nullable=False),
+        pa.field("low", pa.float64(), nullable=False),
+        pa.field("close", pa.float64(), nullable=False),
+        pa.field("volume", pa.float64(), nullable=False),
+        pa.field("source_vendor", pa.string()),
+    ]
+)
+
+
+def _naive_nanos(values) -> list:
+    """A ts column in any resolution to tz-naive nanosecond datetimes."""
+    import pandas as pd
+
+    stamps = pd.to_datetime(pd.Series(values), utc=True)
+    return list(stamps.dt.tz_convert("UTC").dt.tz_localize(None).dt.to_pydatetime())
+
+
+def _equity_instruments(
+    symbols: list[str],
+    first: dt.datetime,
+    venue: str,
+    tick_size: float,
+) -> pa.Table:
+    """One spot instrument per symbol, single-outcome."""
+    count = len(symbols)
+    return pa.table(
+        {
+            "ts_init": [first] * count,
+            "instrument_id": list(symbols),
+            "venue": [venue] * count,
+            "kind": ["spot"] * count,
+            "outcome": [0] * count,
+            "outcome_label": ["SHARE"] * count,
+            "tick_size": [tick_size] * count,
+            "lot_size": [1.0] * count,
+            "expiration_ns": [None] * count,
+            "settlement_observable_ns": [None] * count,
+        },
+        schema=INSTRUMENTS_SCHEMA,
+    )
+
+
+def make_equity_market(
+    bars: pa.Table,
+    *,
+    price_column: str = "close",
+    venue: str = "XNAS",
+    spread_bps: float = 5.0,
+    depth_fraction: float = 0.002,
+    min_depth: float = 100.0,
+    tick_size: float = 0.01,
+    stagger_us: int = 1,
+    source_vendor: str = "cookbook-bars",
+) -> dict[str, pa.Table]:
+    """Canonical backtest tables for equities, derived from OHLCV bars.
+
+    Bar data records no order book, so one has to be assumed before an
+    event-driven run can fill anything. This builds the smallest honest
+    assumption: at each bar a two-sided quote `spread_bps` wide around the
+    bar's `price_column`, with `depth_fraction` of the bar's volume displayed
+    on each side, plus one print at the close carrying the whole bar volume.
+
+    The assumption is the recipe's subject, not a detail: a strategy whose
+    result depends on `spread_bps` is measuring the guess, not the edge.
+
+    Symbols are staggered by `stagger_us` within each bar, so no two book
+    events share an instant. Real feeds do not update a whole panel at one
+    nanosecond either, and the replay's merge order among equal timestamps
+    would otherwise decide which book a same-instant order meets.
+
+    `bars` is any table with `ts`, `symbol`, `open`, `high`, `low`, `close`
+    and `volume` columns (`cu.fetch_daily`, `cu.fetch_intraday` and
+    `cu.make_daily_prices` all qualify). Returns `instruments`, `bars`,
+    `book_deltas` and `trades`.
+    """
+    frame = bars.to_pandas().sort_values(["ts", "symbol"]).reset_index(drop=True)
+    if frame.empty:
+        raise ValueError("make_equity_market needs at least one bar")
+    stamps = _naive_nanos(frame["ts"])
+    symbols = sorted(frame["symbol"].unique())
+    offsets = {symbol: dt.timedelta(microseconds=stagger_us * rank)
+               for rank, symbol in enumerate(symbols)}
+
+    book: dict[str, list] = {name: [] for name in BOOK_DELTAS_SCHEMA.names}
+    prints: dict[str, list] = {name: [] for name in TRADES_SCHEMA.names}
+    bar_rows: dict[str, list] = {name: [] for name in BARS_SCHEMA.names}
+
+    for index, row in enumerate(frame.itertuples()):
+        at = stamps[index] + offsets[row.symbol]
+        mid = float(getattr(row, price_column))
+        half = max(tick_size / 2.0, mid * spread_bps / 20_000.0)
+        bid = round(mid - half, 4)
+        ask = round(mid + half, 4)
+        displayed = max(min_depth, float(row.volume) * depth_fraction)
+
+        for side_index, (side, price) in enumerate((("buy", bid), ("sell", ask))):
+            book["ts_init"].append(at)
+            book["ts_event"].append(at)
+            book["instrument_id"].append(row.symbol)
+            book["outcome"].append(0)
+            book["action"].append("snapshot")
+            book["side"].append(side)
+            book["price"].append(price)
+            book["size"].append(displayed)
+            book["event_index"].append(index)
+            book["is_last"].append(side_index == 1)
+            book["source_vendor"].append(source_vendor)
+
+        prints["ts_init"].append(at)
+        prints["ts_event"].append(at)
+        prints["instrument_id"].append(row.symbol)
+        prints["outcome"].append(0)
+        prints["price"].append(round(mid, 4))
+        prints["size"].append(float(row.volume))
+        prints["aggressor"].append(None)
+        prints["trade_id"].append(f"{row.symbol}-{index}")
+        prints["source_vendor"].append(source_vendor)
+
+        bar_rows["ts_init"].append(at)
+        bar_rows["ts_event"].append(at)
+        bar_rows["instrument_id"].append(row.symbol)
+        bar_rows["outcome"].append(0)
+        for field in ("open", "high", "low", "close"):
+            bar_rows[field].append(float(getattr(row, field)))
+        bar_rows["volume"].append(float(row.volume))
+        bar_rows["source_vendor"].append(source_vendor)
+
+    return {
+        "instruments": _equity_instruments(symbols, stamps[0], venue, tick_size),
+        "bars": pa.table(bar_rows, schema=BARS_SCHEMA),
+        "book_deltas": pa.table(book, schema=BOOK_DELTAS_SCHEMA),
+        "trades": pa.table(prints, schema=TRADES_SCHEMA),
+    }
+
+
+def make_equity_tape(
+    quotes: pa.Table,
+    *,
+    venue: str = "XNAS",
+    print_every: int = 5,
+    print_size: float = 100.0,
+    tick_size: float = 0.01,
+    action: str = "snapshot",
+    levels: int = 1,
+    level_growth: float = 1.0,
+    seed: int = 3,
+    source_vendor: str = "cookbook-tape",
+) -> dict[str, pa.Table]:
+    """Canonical tables for an intraday tape, from a quote stream.
+
+    Prints are derived *from* the quotes rather than generated beside them,
+    so a trade always happens at a price the book was showing. That is what
+    queue-aware fills need: a print at the bid consumes displayed bid size,
+    and a passive order behind it advances.
+
+    `quotes` is a `cu.make_quotes` table (`ts`, `symbol`, `bid`, `ask`,
+    `bid_size`, `ask_size`). Every `print_every`-th quote produces a print,
+    alternating aggressor from a seeded stream.
+
+    `action` chooses how the book is expressed. `"snapshot"` replaces both
+    sides atomically and is what a full-book feed looks like. `"set"` emits
+    a `delete` and a `set` per side, which is what a Python strategy needs:
+    a callback is told the price of a delta but only the level *count* of a
+    snapshot, so a quoting strategy can only follow the touch through deltas.
+
+    `levels` builds a depth ladder, one tick apart, with each level carrying
+    `level_growth` times the size of the one in front of it. A single level
+    is enough to fill small orders at the touch; anything measuring what a
+    large order costs needs a book it can walk down.
+    """
+    if action not in ("snapshot", "set"):
+        raise ValueError("action must be 'snapshot' or 'set'")
+    if levels < 1:
+        raise ValueError("levels must be at least one")
+    if levels > 1 and action != "snapshot":
+        raise ValueError("a ladder is only expressible as a snapshot here")
+    frame = quotes.to_pandas().sort_values(["ts", "symbol"]).reset_index(drop=True)
+    if frame.empty:
+        raise ValueError("make_equity_tape needs at least one quote")
+    stamps = _naive_nanos(frame["ts"])
+    symbols = sorted(frame["symbol"].unique())
+    rng = random.Random(seed)
+
+    book: dict[str, list] = {name: [] for name in BOOK_DELTAS_SCHEMA.names}
+    prints: dict[str, list] = {name: [] for name in TRADES_SCHEMA.names}
+    standing: dict[str, dict[str, float]] = {}
+
+    for index, row in enumerate(frame.itertuples()):
+        at = stamps[index]
+        # Venues quote on a price grid, and a market maker joining the touch
+        # has to be able to name the price it is joining.
+        bid = math.floor(float(row.bid) / tick_size) * tick_size
+        ask = max(bid + tick_size, math.ceil(float(row.ask) / tick_size) * tick_size)
+        touch_levels = (
+            ("buy", round(bid, 6), float(row.bid_size)),
+            ("sell", round(ask, 6), float(row.ask_size)),
+        )
+
+        def emit(name: str, side: str, price, size, last: bool) -> None:
+            book["ts_init"].append(at)
+            book["ts_event"].append(at)
+            book["instrument_id"].append(row.symbol)
+            book["outcome"].append(0)
+            book["action"].append(name)
+            book["side"].append(side)
+            book["price"].append(price)
+            book["size"].append(size)
+            book["event_index"].append(index)
+            book["is_last"].append(last)
+            book["source_vendor"].append(source_vendor)
+
+        if action == "snapshot" or row.symbol not in standing:
+            # A delta feed still has to start somewhere: the first event for an
+            # instrument is a snapshot, because a delta into an empty book
+            # describes a book nobody published.
+            ladder = [
+                (side, round(price + (-depth if side == "buy" else depth) * tick_size, 6),
+                 size * level_growth**depth)
+                for side, price, size in touch_levels
+                for depth in range(levels)
+            ]
+            for position, (side, price, size) in enumerate(ladder):
+                emit("snapshot", side, price, size, position == len(ladder) - 1)
+        else:
+            for side, price, size in touch_levels:
+                previous = standing[row.symbol][side]
+                if previous != price:
+                    emit("delete", side, previous, None, True)
+                emit("set", side, price, size, True)
+        standing[row.symbol] = {side: price for side, price, _ in touch_levels}
+
+        if index % print_every:
+            continue
+        aggressor = "buy" if rng.random() < 0.5 else "sell"
+        prints["ts_init"].append(at)
+        prints["ts_event"].append(at)
+        prints["instrument_id"].append(row.symbol)
+        prints["outcome"].append(0)
+        prints["price"].append(
+            touch_levels[1][1] if aggressor == "buy" else touch_levels[0][1]
+        )
+        prints["size"].append(print_size)
+        prints["aggressor"].append(aggressor)
+        prints["trade_id"].append(f"{row.symbol}-{index}")
+        prints["source_vendor"].append(source_vendor)
+
+    return {
+        "instruments": _equity_instruments(symbols, stamps[0], venue, tick_size),
+        "book_deltas": pa.table(book, schema=BOOK_DELTAS_SCHEMA),
+        "trades": pa.table(prints, schema=TRADES_SCHEMA),
+    }
+
+
+# Mirrors the engine's canonical `resolutions` schema. A resolution is a kind
+# plus what that kind needs: a `winner` names the outcome, a `split` carries a
+# payout per outcome, and a `void` says how many outcomes it refunds across.
 RESOLUTIONS_SCHEMA = pa.schema(
     [
         pa.field("ts_init", pa.timestamp("ns"), nullable=False),
         pa.field("instrument_id", pa.string(), nullable=False),
-        pa.field("winner_outcome", pa.uint16(), nullable=False),
+        pa.field("kind", pa.string(), nullable=False),
+        pa.field("outcome", pa.uint16()),
+        pa.field("payout", pa.float64()),
+        pa.field("outcome_count", pa.uint16()),
     ]
 )
 
@@ -276,7 +542,10 @@ def make_prediction_markets(
             instruments["settlement_observable_ns"].append(_epoch_nanos(observable_at))
         resolutions["ts_init"].append(observable_at)
         resolutions["instrument_id"].append(market["instrument_id"])
-        resolutions["winner_outcome"].append(0 if market["yes_wins"] else 1)
+        resolutions["kind"].append("winner")
+        resolutions["outcome"].append(0 if market["yes_wins"] else 1)
+        resolutions["payout"].append(None)
+        resolutions["outcome_count"].append(None)
 
     event_index = 0
 
@@ -363,7 +632,7 @@ def market_truth(tables: dict[str, pa.Table]) -> pa.Table:
         {
             "instrument_id": resolutions.column("instrument_id"),
             "yes_won": pa.array(
-                [value.as_py() == 0 for value in resolutions.column("winner_outcome")],
+                [value.as_py() == 0 for value in resolutions.column("outcome")],
                 pa.bool_(),
             ),
         }
@@ -391,7 +660,7 @@ def polymarket_market_payloads(tables: dict[str, pa.Table]) -> list[dict]:
     for instrument_id, group in instruments.groupby("instrument_id", sort=True):
         ordered = group.sort_values("outcome")
         labels = [str(label) for label in ordered.outcome_label]
-        winner = resolutions.winner_outcome.get(instrument_id)
+        winner = resolutions.outcome.get(instrument_id)
         prices = ["0"] * len(labels)
         if winner is not None:
             prices[int(winner)] = "1"

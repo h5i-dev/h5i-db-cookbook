@@ -141,6 +141,44 @@ files = cu.write_polymarket_archive(panel, "data/cache/mirror")   # hourly Parqu
 #   bids/asks, flat price/size/side. The inverse of h5i_db.venues, for teaching only.
 ```
 
+Equities and other continuous instruments use two more builders. Both emit the
+same canonical tables, with `kind="spot"` instruments and prices that are not
+probabilities.
+
+```python
+market = cu.make_equity_market(bars, spread_bps=5.0, depth_fraction=0.002,
+                               stagger_us=1)
+#   -> instruments, bars, book_deltas, trades. `bars` is any (ts, symbol, open,
+#   high, low, close, volume) table: cu.fetch_daily, cu.fetch_intraday and
+#   cu.make_daily_prices all qualify. Bar data records no book, so one is
+#   assumed: a two-sided quote `spread_bps` wide around each bar's close with
+#   `depth_fraction` of the bar's volume a side. That assumption is the subject
+#   of 04/08, not a detail to hide.
+tape = cu.make_equity_tape(quotes, action="set", levels=8, level_growth=1.6,
+                           print_every=2, print_size=400.0)
+#   -> instruments, book_deltas, trades from a cu.make_quotes stream. Prints are
+#   derived FROM the quotes, so a trade always happens at a price the book was
+#   showing, which is what queue-aware fills need. `action="set"` emits
+#   delete/set deltas instead of snapshots: a Python callback is told the price
+#   of a delta and only the level *count* of a snapshot, so a quoting strategy
+#   needs deltas (04/09). `levels` builds a ladder for measuring what a large
+#   order costs (04/11) and requires `action="snapshot"`.
+```
+
+**Stagger is load-bearing, not cosmetic.** `make_equity_market` gives each
+symbol its own microsecond within a bar. An intent released into a batch of
+same-timestamp events meets the *new* book for whichever instrument the merge
+reached first and the previous one for all the others, so without the stagger
+the answer depends on the shape of the panel. Recipe 04/13 staggers the
+prediction-market panel by hand for the same reason.
+
+**The stamp chooses the price.** An intent released at an instant meets the last
+book the venue has already processed, and the fill is *recorded* at the next
+event. Stamping one microsecond after a bar's close therefore trades at that
+close. To trade at the next session's close, stamp one microsecond after that
+session's own quote instant (04/08 does this; the book table carries the exact
+instants).
+
 One invariant of that fixture is load-bearing: rows sharing an `event_index`
 must describe ONE outcome of ONE instrument. One event is one book, so a
 snapshot spanning both outcomes describes a book that never existed, holding
@@ -393,6 +431,65 @@ Gotchas that bite in recipes:
   table function takes names and reads at latest). Filter *after* the join.
 - `from h5i_db import col` collides with loop variables named `col` - rename
   them (`for name in (...)`) in any recipe that imports it.
+- **A numpy scalar in an expression renders as a function call.**
+  `col("vol") * np.sqrt(252)` compiles to `"vol" * np.float64(15.87)` and fails
+  planning. Bind the constant with `float(...)` first.
+- **`.select()` after `.sort()` on the same frame is refused** when the
+  projection drops the ordering columns (`_reject_shadowed_ordering`). Keep the
+  unsorted frame around and sort at the point you collect.
+
+## Quant layer cheatsheet
+
+```python
+from h5i_db import quant
+
+series = quant.returns(db, "strategy_returns", snapshot="v1",
+                       annualization=quant.DAILY)     # or from_levels(fork, "bt_equity")
+series.stats(benchmark=other)      # empyrical's perf_stats, plus alpha/beta
+series.drawdown_table(top=5); series.underwater(); series.equity_curve()
+series.rolling_sharpe(63); series.rolling_volatility(63); series.rolling_beta(other, 126)
+quant.tearsheet(series, path="...", benchmark=other)  # self-contained HTML
+
+panel = quant.build_panel(db, factor_frame, price_frame, periods=(1, 5, 21),
+                          quantiles=5, group=SECTORS, max_loss=0.35)
+panel.loss_report(); panel.ic(); panel.mean_ic(by="1mo", by_group=True)
+panel.ic_decay(); panel.quantile_returns(); panel.spread(); panel.turnover()
+panel.rank_autocorrelation(); panel.alpha_beta(); panel.cumulative_returns(period=21)
+quant.factor_report(panel, path="...")
+
+quant.purged_kfold(n, folds=5, horizons=[21]*n, embargo=0.01)
+quant.combinatorial_purged(n, groups=6, test_groups=2, horizons=..., embargo=...)
+quant.walk_forward(n, train_size=500, test_size=125, expanding=False)
+quant.probability_of_backtest_overfitting(matrix, partitions=8)
+quant.deflated_sharpe(returns, trials=8, trials_source="counted")
+quant.minimum_track_record_length(returns)
+
+quant.sweep(db, {"lookback": [63, 126]}, fn, prefix="mom", keep_going=True)
+quant.verify(subject, rerun=lambda: rebuild())        # refuses anything unpinned
+quant.restatement_impact(build, db, before={"version": 1}, after={}, metric=fn)
+quant.basket_payload(db, {"label": result}, panels=quant.PORTFOLIO_PANELS + ("equity",))
+costs.SlippageSample(...); costs.effective_spread(s); costs.implementation_shortfall(s)
+costs.fit_impact(s, shape="sqrt"); costs.fit_from_fills(fork)
+```
+
+Gotchas that bite here too:
+- **A lazy frame passed to `build_panel` is taken as given**, so the pin has to
+  be on the frame (`db.table(name, snapshot=...)`). Passing an unpinned frame
+  with `snapshot=` produces a panel whose provenance claims a pin it did not use.
+- **`fit_from_fills` measures depth consumed, not shortfall.** Without a stored
+  decision price it references the same-instant VWAP of the other fills, so it
+  needs orders that walked more than one level. Build `SlippageSample`s yourself
+  when you know the decision price.
+- **`slippage_ticks` is denominated in a fixed 0.0001 in the Python binding**,
+  not in the instrument's `tick_size`. On a prediction market those coincide; on
+  a 290-dollar share they differ by a hundred times. 04/11 asserts the unit
+  before charging anything.
+- **`backtest.signal_table` rounds timestamps through a float**, so a stamp can
+  land a few nanoseconds off. `pd.DatetimeIndex(...).floor("us")` before joining
+  against microsecond data, or the cast raises.
+- **A study cannot vary `data.signals`** - that field is data identity. Search a
+  strategy parameter with one signals table per candidate (04/12) and use
+  `backtest.study` for execution, portfolio and risk axes.
 
 Keep in `db.sql()` (no verb, and the string is clearer): `UNION ALL`, deep
 multi-CTE chains, scalar subqueries, `gapfill` / `resample` / `tail`, the

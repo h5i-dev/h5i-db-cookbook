@@ -49,7 +49,8 @@ db = h5i_db.Database(cu.fresh_db("05_probability_calibration"), create=True)
 # |---|---|---|
 # | `ts_init` | `timestamp[ns]` | when the result became **observable**, not when the event occurred |
 # | `instrument_id` | `string` | the market |
-# | `winner_outcome` | `uint16` | 0 = YES won, 1 = NO won |
+# | `kind` | `string` | `winner`, `split` or `void`; these fixtures are all winners |
+# | `outcome` | `uint16` | the winning outcome: 0 = YES won, 1 = NO won |
 #
 # The distinction in that first row is the whole discipline. An election is
 # decided on election night but called hours later; settling against the earlier

@@ -65,6 +65,8 @@
 | [09 リードラグ分析](02_alpha_research/09_lead_lag.ipynb) | ASOF で揃えたクロスアセットのリードラグ |
 | [10 ポートフォリオのリバランス](02_alpha_research/10_portfolio_rebalancing.ipynb) | バージョン付きの保有、回転率の管理、リバランスの監査証跡 |
 | [11 検索拡張予測](02_alpha_research/11_retrieval_augmented_forecasting.ipynb) | 埋め込みを列として持つ、`array_distance` の上位k件、時系列 RAG が漏れる理由 |
+| [12 トレンドフォロー](02_alpha_research/12_trend_following.ipynb) | 時系列モメンタム、オーバーレイによるボラターゲティング、回転率の予算、クライシスアルファの主張を検証 |
+| [13 平均回帰](02_alpha_research/13_mean_reversion.ipynb) | そこに無い短期シグナルと、それを示す必要グロスリターン |
 
 ### 03 - リスクと本番運用
 
@@ -93,6 +95,12 @@
 | [05 Kaggle Polymarket のリプレイ](04_event_driven_backtesting/05_kaggle_polymarket_replay.ipynb) | 実際の板の上での因果的な特徴量、イベント駆動の約定、手数料・レイテンシ・スリッページの感応度 |
 | [06 注文のライフサイクルとリスク](04_event_driven_backtesting/06_order_lifecycle_and_risk.ipynb) | 型のついたプリフライト、発注／訂正／取消、エンジン内蔵の口座制限、説明、意味的な検証 |
 | [07 Python の戦略コールバック](04_event_driven_backtesting/07_python_strategy_callbacks.ipynb) | 状態を持つ戦略、タイマー、約定を受けた行動、安定した戦略の同一性、コールバック再実行の検証 |
+| [08 バーからイベント駆動へ](04_event_driven_backtesting/08_equity_bars_to_event_driven.ipynb) | バーから合成した板、`target_positions`、ベクトル化とリプレイを1セント単位で突き合わせる |
+| [09 マーケットメイクと在庫](04_event_driven_backtesting/09_market_making_inventory.ipynb) | デルタからの気配提示、在庫スキュー、轢かれること、キャンセルに効くレイテンシ、マークアウト |
+| [10 執行アルゴリズム](04_event_driven_backtesting/10_execution_algorithms.ipynb) | 到着価格に対する TWAP・VWAP・POV と、終われなかったことの機会コスト |
+| [11 約定からのコスト推定](04_event_driven_backtesting/11_calibrating_costs_from_fills.ipynb) | `quant.costs`: 実効スプレッド、平方根インパクトの推定、それを安いバックテストに課金する |
+| [12 戦略空間の探索](04_event_driven_backtesting/12_searching_a_strategy_space.ipynb) | 候補ごとに1つのシグナルテーブル、`RandomSearch` とウォークフォワードと `TopK`、試行台帳、1つのバスケットレポート |
+| [13 口座の約定履歴のリプレイ](04_event_driven_backtesting/13_replaying_an_account_ledger.ipynb) | 台帳を注文意図にコンパイルし、板が拒否した場所を市場ごとに突き合わせる |
 
 ### 05 - 予測市場
 
@@ -109,6 +117,19 @@
 | [06 ベンダーデータの取り込み](05_prediction_markets/06_vendor_data_onramp.ipynb) | ベンダー Parquet から正規テーブルへ: マーケット仕様、データとしてのレイアウト、コンテンツアドレスの再取り込み、カバレッジ、CLI |
 | [07 ループ全体を一度だけ](05_prediction_markets/07_end_to_end_workflow.ipynb) | 取り込みから意思決定まで: ピン、戦略パック、ショートリストのホールドアウトを使うウォークフォワード、バスケットレポート、Brier アドバンテージ、デフレーテッド・シャープ、検証 |
 | [08 実データでのループ全体](05_prediction_markets/08_real_polymarket_end_to_end.ipynb) | ティックレベルの実 Polymarket データで一気通貫: 11の規則を試してすべて損。コスト予算がその理由を説明する |
+
+### 06 - パフォーマンス分析
+
+`h5i_db.quant` 層です。`alphalens` と `pyfolio` に対する、保守された答えであり、どちらにも
+用意できなかった部分を持っています。どの統計量も、計算元のデータバージョンを持ち歩くエンジンへの
+クエリで、ピン留めされていない結果は検証を拒まれます。
+
+| レシピ | 学べること |
+|---|---|
+| [01 ティアシートとパフォーマンス統計](06_performance_analytics/01_tearsheets_and_performance_stats.ipynb) | empyrical と一致する `ReturnSeries` の統計、ドローダウンの出来事、ローリングベータ、実行からの `from_levels`、`verify` が拒む理由 |
+| [02 ファクターパネルとレポート](06_performance_analytics/02_factor_panels_and_reports.ipynb) | `build_panel`: 欠損の会計、IC の減衰、分位リターン、回転率、セクターニュートラル、1つの HTML レポート |
+| [03 リークのない交差検証](06_performance_analytics/03_cross_validation_without_leakage.ipynb) | パージド k 分割、エンバーゴ、CPCV の分布、ウォークフォワード、そして勝者への PBO とデフレーテッド・シャープ |
+| [04 スイープ・検証・修正](06_performance_analytics/04_sweeps_verification_restatements.ipynb) | 試行ごとに1フォークの `quant.sweep`、来歴のダイジェスト、ベンダー改訂が答えに与えた変化 |
 
 ## 作り直し方
 
