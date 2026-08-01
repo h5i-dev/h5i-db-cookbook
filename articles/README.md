@@ -10,7 +10,12 @@ source of truth, and the `.ipynb` beside it is generated and executed from it.
 
 | Article | What it covers |
 |---|---|
-| [Practical backtesting for Polymarket](practical_backtesting_for_polymarket.ipynb) | Order-book mechanics, a twelve-event toy market where four strategies diverge on execution alone, then eleven standard rules on real tick-level Polymarket books |
+| [Practical backtesting for Polymarket](practical_backtesting_for_polymarket.ipynb) | Order-book mechanics, a fifteen-event toy market where four strategies diverge on execution alone, then eleven standard rules on real tick-level Polymarket books |
+
+The Polymarket notebook is around 900 KB, larger than any recipe, because it
+embeds two `result.report()` pages as iframes. That is deliberate: the report is
+part of what the article is arguing for. The same pages are written to
+`data/cache/` as standalone HTML files, which are gitignored.
 
 ## Building
 

@@ -939,6 +939,51 @@ axes[1].set_title("Total P&L on an identical book and outcome")
 axes[1].set_xlabel("dollars")
 fig.tight_layout()
 
+# %% [markdown]
+# ## The whole run as one page
+#
+# Everything above was assembled by hand: a scoreboard here, a fills table there,
+# a chart at the end. `result.report()` does that in one call, rendering the run
+# as a single self-contained HTML document — no network access when it is opened,
+# no dependencies, so it can be attached to a review, committed next to the run,
+# or opened in five years.
+#
+# It is not a tearsheet, and the ordering says so. A tearsheet answers *how did
+# the equity curve behave*; this answers *should I believe these numbers, and what
+# actually happened*, so it leads with the evidence:
+#
+# - a **status banner** naming the replay fidelity, because a periodic snapshot
+#   cannot support the claims a full tick book can, and whether the run was
+#   pinned;
+# - **provenance** — the run digest, the config digest and the snapshot the data
+#   came from;
+# - then the **performance** panels;
+# - then the **execution record**: the order lifecycle with rejection reasons in
+#   the engine's own words, and every fill plotted and tabled;
+# - and finally the **configuration verbatim**, so the page carries everything
+#   needed to re-run what it describes.
+#
+# The delayed taker is the one worth reporting on, because it is the only run here
+# with something to explain: one order rejected after the contract stopped trading
+# and one still in flight when the replay ended. Both appear in the page below
+# with the engine's own reason attached.
+
+# %%
+report_path = Path("data/cache/toy-delayed-taker-report.html")
+document = runs["4. taker, 10 min late"].report(
+    report_path, title="Toy market: taker momentum with 10 minutes of latency"
+)
+print(f"wrote {report_path} ({len(document) / 1024:.0f} KB, self-contained)")
+
+# %% [markdown]
+# `_repr_html_` puts the same page in an iframe, so returning the result from a
+# cell renders it inline. The iframe is deliberate: the report is a whole document
+# with its own theme, and an iframe stops that theme repainting the notebook
+# around it.
+
+# %%
+runs["4. taker, 10 min late"]
+
 # %%
 db.close()
 
@@ -1593,6 +1638,31 @@ print(f"tables compared: {list(verified['tables_equal'])}")
 print(f"data pin:        {results[best_name].config.data.snapshot}")
 print(f"trial digest:    {results[best_name].config.trial_digest[:16]}")
 
+# %% [markdown]
+# ### The artifact worth keeping
+#
+# Same `report()` call as in Part 2, now on a real run. This is the thing to
+# archive at the end of a study: not the notebook that produced the number, but a
+# single self-contained file carrying the number, the data version behind it, the
+# fidelity caveat, every order and fill, and the configuration verbatim — which is
+# exactly what `verify()` needs to re-run it.
+#
+# Read the status banner first. It says `periodic L2 snapshots` rather than
+# something reassuring, because that is the honest description of what this
+# capture supports, and it is on the page whether or not the reader thinks to ask.
+# Underneath it sit the run's own warnings, including the settlement refusal from
+# the previous section, stated by the engine as: *booking it would be profit
+# nobody trading this window could have collected*. A page that leads with the
+# reasons to doubt it is a page worth circulating.
+
+# %%
+real_report = Path(f"data/cache/polymarket-{best_name}-report.html")
+document = results[best_name].report(
+    real_report, title=f"Real Polymarket books: {best_name}"
+)
+print(f"wrote {real_report} ({len(document) / 1024:.0f} KB, self-contained)")
+results[best_name]
+
 # %%
 fig, axes = plt.subplots(1, 2, figsize=(11, 4))
 for name in ("microprice_imbalance", "rsi_reversion", best_name):
@@ -1653,6 +1723,13 @@ real.close()
 # settlement on when the outcome was actually knowable, run the walk-forward split
 # so a choice is scored on data it never saw, deflate the Sharpe by the number of
 # things you tried, and verify that the run reproduces.
+#
+# **On what you hand to someone else.** `result.report()` writes all of that as
+# one self-contained page — fidelity and pin first, then performance, then every
+# order and fill, then the configuration verbatim. It is a better unit of record
+# than a notebook, because it opens years later with no environment to rebuild,
+# and it puts the caveats where a reader sees them rather than where an author
+# remembers to mention them.
 #
 # **Where to go next.** The obvious research directions this article does not
 # take: obtain both token books and test the parity trade that Part 1 describes;
