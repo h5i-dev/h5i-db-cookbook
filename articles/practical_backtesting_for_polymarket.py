@@ -81,6 +81,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
+from IPython.display import HTML, display
 
 import cookbook_utils as cu
 import h5i_db
@@ -430,25 +431,59 @@ print(f"{toy_book.num_rows:,} rows x {toy_book.num_columns} columns "
 toy_book.to_pandas().head()
 
 # %% [markdown]
-# Printed as the ladder from Part 1, the third book update — the dip — looks like
-# this. This is the same data as the rows above, just drawn the way a trader
-# reads it.
+# Drawn as the ladder from Part 1, the third book update — the dip — looks like
+# this. It is the same rows as above, arranged the way a trader reads them, with
+# each bar scaled to the size resting at that level.
+#
+# The colours are semi-transparent overlays rather than solid fills, and the text
+# inherits its colour from the page, so the ladder reads correctly against a light
+# or a dark notebook theme without knowing which one it is in.
 
 # %%
-def print_ladder(book: pa.Table, event_index: int) -> None:
+def ladder_html(book: pa.Table, event_index: int) -> HTML:
+    """Draw one book event as a price ladder: asks above, bids below."""
     frame = book.to_pandas().query("event_index == @event_index")
     when = frame.ts_init.iloc[0]
     asks = frame[frame.side == "sell"].sort_values("price", ascending=False)
     bids = frame[frame.side == "buy"].sort_values("price", ascending=False)
-    print(f"{MARKET}  YES book at {when:%H:%M:%S}\n")
-    for row in asks.itertuples():
-        print(f"      ASK   {row.price:.4f}  x {row.size:7.1f}")
-    print(f"      {'-' * 30}   spread {asks.price.min() - bids.price.max():.4f}")
-    for row in bids.itertuples():
-        print(f"      BID   {row.price:.4f}  x {row.size:7.1f}")
+    widest = frame["size"].max()
+    spread = asks.price.min() - bids.price.max()
+
+    def row(record, tint: str) -> str:
+        width = record.size / widest * 100
+        return (
+            '<tr>'
+            f'<td style="padding:2px 10px;opacity:.55;font-size:.85em">'
+            f'{"ASK" if record.side == "sell" else "BID"}</td>'
+            f'<td style="padding:2px 10px;text-align:right;font-variant-numeric:tabular-nums">'
+            f'{record.price:.4f}</td>'
+            f'<td style="padding:2px 10px;text-align:right;opacity:.7;'
+            f'font-variant-numeric:tabular-nums">{record.size:,.0f}</td>'
+            f'<td style="padding:2px 10px;width:55%">'
+            f'<div style="background:{tint};width:{width:.1f}%;height:14px;'
+            'border-radius:3px"></div></td>'
+            '</tr>'
+        )
+
+    body = "".join(row(record, "rgba(192,57,43,.55)") for record in asks.itertuples())
+    body += (
+        '<tr><td colspan="4" style="padding:6px 10px;border-top:1px dashed '
+        'currentColor;border-bottom:1px dashed currentColor;opacity:.65;'
+        f'font-size:.85em">spread {spread:.4f} &nbsp;·&nbsp; mid '
+        f'{(asks.price.min() + bids.price.max()) / 2:.4f} &nbsp;·&nbsp; '
+        'nothing trades in here</td></tr>'
+    )
+    body += "".join(row(record, "rgba(44,127,184,.55)") for record in bids.itertuples())
+    return HTML(
+        '<div style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;'
+        'max-width:620px">'
+        f'<div style="padding:4px 10px;opacity:.75;font-size:.9em">{MARKET}'
+        f' &nbsp;·&nbsp; YES book at {when:%H:%M:%S}</div>'
+        f'<table style="border-collapse:collapse;width:100%">{body}</table></div>'
+    )
 
 
-print_ladder(toy_book, 3)
+ladder_html(toy_book, 3)
 
 # %% [markdown]
 # ## Two more tables: what the instrument is, and how it ended
@@ -976,13 +1011,36 @@ document = runs["4. taker, 10 min late"].report(
 print(f"wrote {report_path} ({len(document) / 1024:.0f} KB, self-contained)")
 
 # %% [markdown]
-# `_repr_html_` puts the same page in an iframe, so returning the result from a
-# cell renders it inline. The iframe is deliberate: the report is a whole document
-# with its own theme, and an iframe stops that theme repainting the notebook
-# around it.
+# To show it inline, `display()` the result itself: `_repr_html_` wraps the page
+# in an `<iframe srcdoc="...">`, which is worth understanding rather than taking
+# on faith, because it is the one thing about the report you cannot change.
+#
+# The obvious approach — `display(HTML(document))`, injecting the markup straight
+# into the notebook — does not work here, for two reasons. The report is a whole
+# document with its own dark theme, so its `<style>` would repaint the notebook
+# around it. More fundamentally, the page renders itself: its `<body>` is an empty
+# container a few dozen characters long, and a single script builds every chart
+# and table from an embedded JSON payload. Notebook front ends do not execute
+# scripts in HTML output, so a direct injection would produce an empty box.
+#
+# An iframe with `srcdoc` is a separate browsing context, which both isolates the
+# styles and lets the script run. The cost is that escaping the document into an
+# attribute inflates it by roughly half, which is why this notebook is larger than
+# the recipes it is drawn from.
+
 
 # %%
-runs["4. taker, 10 min late"]
+# The claim above, checked rather than asserted: strip the scripts out of the
+# document and see what markup is left for a front end to render.
+import re
+
+body = re.search(r"<body[^>]*>(.*)</body>", document, re.S).group(1)
+static = re.sub(r"<script.*?</script>", "", body, flags=re.S).strip()
+print(f"whole document   {len(document):,} chars")
+print(f"body             {len(body):,} chars")
+print(f"body less script {len(static):,} chars  ->  {static}")
+
+display(runs["4. taker, 10 min late"])
 
 # %%
 db.close()
@@ -1657,11 +1715,11 @@ print(f"trial digest:    {results[best_name].config.trial_digest[:16]}")
 
 # %%
 real_report = Path(f"data/cache/polymarket-{best_name}-report.html")
-document = results[best_name].report(
+real_document = results[best_name].report(
     real_report, title=f"Real Polymarket books: {best_name}"
 )
-print(f"wrote {real_report} ({len(document) / 1024:.0f} KB, self-contained)")
-results[best_name]
+print(f"wrote {real_report} ({len(real_document) / 1024:.0f} KB, self-contained)")
+display(results[best_name])
 
 # %%
 fig, axes = plt.subplots(1, 2, figsize=(11, 4))
