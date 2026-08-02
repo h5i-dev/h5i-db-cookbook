@@ -10,16 +10,16 @@
 # YES plus NO must sum to a dollar, how a limit order book turns competing orders
 # into a price, and why "the price" is at least five different numbers depending
 # on which question you are asking. If any of that is unfamiliar, read section 1
-# of that article first — none of it is repeated here.
+# of that article first. None of it is repeated here.
 #
-# What follows is the practical half, and it does three things on real data:
+# What follows is the practical half, and it does three things:
 #
-# 1. **Get real Polymarket order books into a database** — a tick-level capture of
-#    real markets with real resolved outcomes.
-# 2. **Write a strategy** — as an event-driven callback, which is the form that
+# 1. **Get real Polymarket order books into a database**, from a tick-level
+#    capture of markets that have since resolved.
+# 2. **Write a strategy** as an event-driven callback, which is the form that
 #    generalises to whatever you actually want to test.
-# 3. **Run it and read the result** — including the one decomposition that says
-#    whether an idea is worth pursuing.
+# 3. **Run it and read the result**, including the one decomposition that tells
+#    you whether an idea is worth pursuing.
 #
 # The database is [h5i-db](https://github.com/h5i-dev/h5i-db), an embedded,
 # versioned time-series store with an event-driven backtest engine built in.
@@ -103,24 +103,23 @@ print(f"  first bid  {event['bids'][0]}  (price and size arrive as strings)")
 # Every study inherits the shape of its data, and it is better to state that up
 # front than to discover it in a result.
 #
-# **It covers one day.** Most of these markets resolve later, so almost nothing
-# can be held to resolution inside the window. This is an intraday study, and
-# closed round trips are the only honest scoreboard.
+# It covers one day. Most of these markets resolve later, so almost nothing can be
+# held to resolution inside the window. This is an intraday study, and closed
+# round trips are the only honest scoreboard.
 #
-# **It carries the YES side only.** The NO token's book is not in the capture, so
-# the parity trade described above is not testable here and every rule must trade
-# the YES book.
+# It carries the YES side only. The NO token's book is absent, so the parity trade
+# is not testable here and every rule must trade the YES book.
 #
-# **It carries full depth**, which we truncate to the touch at ingest, because a
-# rule that trades at the touch reads two levels. The truncation is opt-in and
+# It carries full depth, which we truncate to the touch at ingest, because a rule
+# that trades at the touch reads two levels. The truncation is opt-in and
 # reported, since a silently shallower book is a different book.
 #
 # ## Picking markets
 #
 # `market_targets.parquet` carries one row per market including the UMA-verified
-# outcome — UMA being the decentralised oracle Polymarket resolves through.
-# Taking the outcome from the label file rather than inferring it from the final
-# price is the difference between a label and a guess.
+# outcome. UMA is the decentralised oracle Polymarket resolves through. Taking the
+# outcome from the label file, instead of inferring it from the final price, is the
+# difference between a label and a guess.
 #
 # | column | type | meaning |
 # |---|---|---|
@@ -158,16 +157,16 @@ print(chosen[["question", "snapshot_rows", "end_date", "target"]].to_string(inde
 # Two declarations do the whole job.
 #
 # `MarketSpec` describes each contract. `outcome_labels` and `tokens` are paired
-# **positionally**, so the YES token must sit at the same index as the `YES`
-# label — getting that backwards would attribute every fill to the wrong side.
+# **positionally**, so the YES token must sit at the same index as the `YES` label.
+# Get that backwards and every fill is attributed to the wrong side.
 # `settlement_observable_ns` is when the outcome became *knowable*, and the engine
 # refuses to settle a position unless the replay actually reached that instant.
 # That one field stops the most common form of accidental lookahead in
 # prediction-market research, and we watch it work at the end.
 #
-# `ArchiveLayout` describes the *file shape* — where the timestamp is, what unit
-# it is in, which column holds the payload, which JSON field names the token — so
-# reading a new vendor's format is a literal rather than a new code path.
+# `ArchiveLayout` describes the *file shape*: where the timestamp is, what unit it
+# is in, which column holds the payload, which JSON field names the token. Reading
+# a new vendor's format is a literal, not a new code path.
 
 # %%
 specs = [
@@ -213,10 +212,10 @@ for spec in specs:
     print(f"  {spec.outcome_labels[spec.winner_outcome]:>3} won: {spec.metadata['question'][:60]}")
 
 # %% [markdown]
-# `db.snapshot(...)` is worth a sentence, because everything downstream leans on
-# it. It pins a named, immutable view of the input tables, so every run provably
-# reads the same bytes and a result can be reproduced months later. Append more
-# data tomorrow and `real-v1` still resolves to exactly what it does today.
+# Everything downstream leans on `db.snapshot(...)`. It pins a named, immutable
+# view of the input tables, so every run provably reads the same bytes and a result
+# can be reproduced months later. Append more data tomorrow and `real-v1` still
+# resolves to exactly what it does today.
 #
 # The canonical `book_deltas` table now holds real books. Every row is one price
 # level of one book update; rows sharing an `event_index` are one atomic event,
@@ -249,7 +248,7 @@ book.to_pandas().head()
 # costs are on any real market, because that is a property of the data. Here it is
 # for this capture.
 #
-# `backtest.quote_panel` collapses `book_deltas` to the top of book — one row per
+# `backtest.quote_panel` collapses `book_deltas` to the top of book: one row per
 # instrument per instant, which is also the shape the strategy will see.
 
 # %%
@@ -262,8 +261,8 @@ print(panel[["bid", "ask", "spread", "mid"]].describe().round(4).to_string())
 # %% [markdown]
 # One book from the capture, drawn as the ladder from the article. It has two rows
 # rather than five because `max_levels=1` truncated the ingest to the touch, which
-# is all a taker at this size ever reaches — the point here is that the numbers
-# came out of a real venue feed rather than an example.
+# is all a taker at this size ever reaches. These numbers came out of a venue feed,
+# not an example.
 
 # %%
 questions = {spec.instrument_id: spec.metadata["question"] for spec in specs}
@@ -320,22 +319,22 @@ levels["half_spread_pct_of_mid"] = levels.half_spread / levels.mean_mid * 100
 print(levels.round(4).to_string())
 
 # %% [markdown]
-# The shape is the point. Crossing the spread costs well under half a percent in
-# the crowded middle of the book and near the certain end, and it explodes on
-# cheap contracts, where a single round trip costs a double-digit percentage of
-# the position before anything has happened. A longshot strategy has to be right
-# about *direction* far more often than it has to be right about *probability*.
+# Crossing the spread costs well under half a percent in the crowded middle of the
+# book and near the certain end. On cheap contracts it explodes: a single round
+# trip there costs a double-digit percentage of the position before anything has
+# happened. A longshot strategy has to be right about *direction* far more often
+# than it has to be right about *probability*.
 #
-# Keep the middle-of-the-book number in mind, because the strategy below trades
-# there and we will be comparing its earnings directly against it: roughly
-# **0.14 cents a share**, paid on entry and again on exit.
+# Keep the middle-of-the-book number in mind. The strategy below trades there, and
+# we will compare its earnings directly against it: roughly 0.14 cents a share,
+# paid on entry and again on exit.
 #
 # One more cost, briefly. Polymarket's headline trading fee has historically been
-# zero, which is unusual and genuinely favourable, so every run below charges
-# nothing and the costs you see are pure spread. Venues that do charge — Kalshi
-# most prominently — use a fee proportional to `p * (1 - p)`, the variance of a
-# coin flip, so it is largest where the contract is genuinely uncertain. h5i-db
-# implements that curve as `fee_kind="kalshi"` if you need it.
+# zero, which is unusual, so every run below charges nothing and the costs you see
+# are pure spread. Venues that do charge, Kalshi most prominently, use a fee
+# proportional to `p * (1 - p)`, the variance of a coin flip, so it peaks where the
+# contract is most uncertain. h5i-db implements that curve as `fee_kind="kalshi"`
+# if you need it.
 
 # %% [markdown]
 # ---
@@ -344,19 +343,19 @@ print(levels.round(4).to_string())
 #
 # A strategy here is an **event-driven callback**: an object whose methods are
 # called as the replay walks the data forward, returning order commands. This is
-# the shape most backtesting frameworks use, and it is the form that generalises —
-# anything path-dependent, anything reacting to its own fills or current position,
-# fits inside it.
+# the shape most backtesting frameworks use, and it generalises. Anything
+# path-dependent, anything reacting to its own fills or current position, fits
+# inside it.
 #
-# The rule we will write is **breakout**, about the simplest trend-following idea
-# there is:
+# The rule we will write is breakout, about the simplest trend-following idea there
+# is:
 #
 # > Buy when the price makes a new high for the last `lookback` observations. Sell
 # > out when it makes a new low. Hold nothing otherwise.
 #
-# It is deliberately simple, because the subject of this article is the machinery
-# around a strategy rather than the strategy itself. **Replace the body of
-# `on_event` and everything else in this notebook still works.**
+# It is deliberately simple. The subject of this article is the machinery around a
+# strategy, not the strategy itself, so replace the body of `on_event` and
+# everything else in the notebook still works.
 #
 # ## What a callback receives
 #
@@ -378,25 +377,24 @@ print(levels.round(4).to_string())
 #
 # ## Three bugs you cannot write
 #
-# This is the part worth pausing on, because it is where the callback form earns
-# its place in a first tutorial. Writing this same rule against a precomputed
-# table of signals invites three classic mistakes, and none of them is even
-# expressible here.
+# Here is where the callback form earns its place in a first tutorial. Writing this
+# same rule against a precomputed table of signals invites three classic mistakes,
+# and none of them is even expressible here.
 #
-# **You cannot see the future.** A table-based rule computes a rolling window over
-# the whole history at once and has to remember to exclude the current row from
-# its own window. A callback is handed one event at a time and physically cannot
-# read the next one.
+# You cannot see the future. A table-based rule computes a rolling window over the
+# whole history at once and has to remember to exclude the current row from its own
+# window. A callback is handed one event at a time and physically cannot read the
+# next one.
 #
-# **You cannot trade on a price the venue has not processed.** The engine shows
-# market data to the venue before the strategy, and queues strategy commands
-# rather than executing them inside the callback that produced them. An order
-# decided from this event meets the *next* book — which is exactly the constraint
-# reality imposes, and exactly the one a naive backtest forgets.
+# You cannot trade on a price the venue has not processed. The engine shows market
+# data to the venue before the strategy, and queues strategy commands instead of
+# executing them inside the callback that produced them. An order decided from this
+# event meets the *next* book, which is the constraint reality imposes and the one a
+# naive backtest forgets.
 #
-# **You cannot lose track of your position.** `event["position"]` is the engine's
-# own number rather than a flag you maintain, so the rule cannot double up on an
-# entry it has forgotten making.
+# You cannot lose track of your position. `event["position"]` is the engine's own
+# number, not a flag you maintain, so the rule cannot double up on an entry it has
+# forgotten making.
 
 # %%
 class Breakout(backtest.EventStrategy):
@@ -476,9 +474,9 @@ print(f"realized P&L  {summary['realized_pnl']:+.4f}")
 print(f"fees paid     {fills.commission.sum():.4f}")
 
 # %% [markdown]
-# Every execution is a table, and it is worth looking at the first few rather than
-# trusting the total. Note `is_taker` on each row: the rule sends market orders,
-# so it crossed the spread every single time, and section 2 said what that costs.
+# Every execution is a table. Look at the first few instead of trusting the total,
+# and note `is_taker` on each row: the rule sends market orders, so it crossed the
+# spread every single time, and section 2 said what that costs.
 
 # %%
 fills[["ts", "instrument_id", "side", "price", "quantity", "is_taker", "tag"]].head(8)
@@ -486,8 +484,7 @@ fills[["ts", "instrument_id", "side", "price", "quantity", "is_taker", "tag"]].h
 # %% [markdown]
 # ### 174 orders, 104 fills
 #
-# That gap is worth chasing rather than shrugging at, and the order table says
-# exactly what happened to every one.
+# The order table says exactly what happened to each one.
 
 # %%
 orders = result.orders.to_pandas()
@@ -499,10 +496,10 @@ print(f"\nwhy the {len(refused)} rejections, in the engine's own words:")
 print(f"  {refused.reject_reason.iloc[0]}")
 
 # %% [markdown]
-# Nearly all of them were **rejected because the contract had already stopped
-# trading**. One of the six markets closed on 2026-03-08 while the capture covers
+# Nearly all of them were rejected because the contract had already stopped
+# trading. One of the six markets closed on 2026-03-08 while the capture covers
 # 2026-03-09, so its book keeps ticking in the data after the contract itself
-# expired. The strategy has no way to know that; the engine does, from
+# expired. The strategy has no way to know that. The engine does, from
 # `expiration_ns` on the `MarketSpec`, and refuses every order.
 #
 # This is the sort of thing a hand-rolled backtest gets wrong silently. It would
@@ -534,10 +531,9 @@ print(expired.assign(question=lambda f: [questions[k][:44] for k in f.instrument
 #
 # ## Where the money went
 #
-# The strategy lost money. The useful question is not *how much* but *why*,
-# because "the idea is wrong" and "the idea is fine and the trading is too
-# expensive" call for completely different responses — and the fills can tell them
-# apart.
+# The strategy lost money. The useful question is *why*, because "the idea is
+# wrong" and "the idea is fine and the trading is too expensive" call for completely
+# different responses, and the fills can tell them apart.
 #
 # A taker pays half the spread on entry and half on exit, so the spread bill is
 # computable directly from the fills and the books they met. Subtract it and what
@@ -587,9 +583,9 @@ print(budget.round(4).to_string(index=False))
 # paid about 0.15 cents a share to cross the spread, and 0.15 is bigger than 0.11.
 #
 # That is far more useful than "it loses". The idea is not worthless; it is being
-# expressed in a way that costs slightly more than it is worth — which suggests an
-# obvious lever. **Trade less often.** If the edge per share survives while the
-# number of trades falls, the arithmetic flips.
+# expressed in a way that costs slightly more than it is worth, which suggests an
+# obvious lever. Trade less often. If the edge per share survives while the number
+# of trades falls, the arithmetic flips.
 #
 # ## Trading less often
 #
@@ -628,23 +624,23 @@ print(sweep[columns].round(4).to_string(index=False))
 print(f"\ncorrelation between fills and P&L: {sweep.fills.corr(sweep.net_pnl):+.3f}")
 
 # %% [markdown]
-# This table is the whole article in one place.
+# Four columns to read, in order.
 #
-# **`spread_cost` falls with the trade count**, from about \$4 to \$0.5. Fewer
-# shares crossed, less spread paid; no surprise.
+# `spread_cost` falls with the trade count, from about \$4 to \$0.5. Fewer shares
+# crossed, less spread paid; no surprise.
 #
-# **`gross_edge` does not follow it.** It wanders around a dollar with no trend,
-# and the busiest setting has the *least* of it. Trading sixteen times as often
-# did not find sixteen times as much signal; it found the same signal and buried
-# it in noise.
+# `gross_edge` does not follow it. It wanders around a dollar with no trend, and
+# the busiest setting has the *least* of it. Trading sixteen times as often did
+# not find sixteen times as much signal; it found the same signal and buried it in
+# noise.
 #
-# **`cost_c_per_share` is flat**, at about 0.14 cents. It has to be: that is the
-# half-spread, a property of the book rather than of the rule.
+# `cost_c_per_share` is flat, at about 0.14 cents. It has to be: that is the
+# half-spread, a property of the book and not of the rule.
 #
-# **`gross_c_per_share` climbs steeply.** The trades a short lookback adds are
-# worse than the ones it already had.
+# `gross_c_per_share` climbs steeply. The trades a short lookback adds are worse
+# than the ones it already had.
 #
-# And the sign of `net_pnl` flips exactly where those last two columns cross.
+# The sign of `net_pnl` flips exactly where those last two columns cross.
 # **A strategy is profitable when its gross edge per share exceeds the half-spread
 # it pays, and everything else is bookkeeping.**
 
@@ -679,14 +675,14 @@ fig.tight_layout()
 # %% [markdown]
 # ## Before believing any of it
 #
-# One setting makes money, and this is the point in a research session where it is
-# easiest to fool yourself. So, plainly: **we tried five things and picked the best
-# one**, and the winner made 49 cents on 33 fills in a single day.
+# One setting makes money, and this is where a research session most easily fools
+# the person running it. We tried five things and picked the best one. The winner
+# made 49 cents on 33 fills in a single day.
 #
 # The **deflated Sharpe ratio** prices exactly that mistake. It computes the Sharpe
 # a worthless strategy would be expected to reach by luck given how many trials
 # produced it, then asks how likely the observed Sharpe is to beat that. Run it
-# twice — pretending we tried one setting, then telling the truth — because the
+# twice, pretending we tried one setting and then telling the truth, because the
 # difference between those two numbers is the lesson.
 
 # %%
@@ -708,8 +704,8 @@ for claimed in (1, len(LOOKBACKS)):
 # %% [markdown]
 # Same run, same equity curve, same Sharpe. Claim one setting and it looks like a
 # 76% chance of being real; admit five and it falls to 29%. Nobody applies this
-# correction for you — the trial count is a fact about your afternoon rather than
-# about your data.
+# correction for you. The trial count is a fact about your afternoon, not about
+# your data.
 #
 # There is a limit on what one day of six markets could show even in principle.
 # The panel includes three questions about the same Federal Reserve meeting, whose
@@ -736,16 +732,16 @@ if isinstance(warning, str) and warning:
 
 # %% [markdown]
 # Had those positions been marked to their eventual outcomes, this backtest would
-# have looked spectacular — the markets resolved weeks after the last book event
-# in the data. That is the most valuable-looking bug in prediction-market
-# research, and it is worth having a machine refuse it rather than remembering to.
+# have looked spectacular. The markets resolved weeks after the last book event in
+# the data. That is the most valuable-looking bug in prediction-market research,
+# and better refused by a machine than remembered by a person.
 #
 # ## The run as one page
 #
 # Everything above was assembled by hand: a table here, a chart there.
 # `result.report()` does it in one call, rendering the run as a self-contained
-# HTML document — no network access when opened, no dependencies — so it can be
-# attached to a review or opened in five years.
+# HTML document with no network access when opened and no dependencies, so it can
+# be attached to a review or opened in five years.
 #
 # It is not a tearsheet. A tearsheet answers *how did the equity curve behave*;
 # this answers *should I believe these numbers, and what actually happened*, so it
@@ -765,8 +761,8 @@ display(best)
 #
 # The one claim that has to hold whatever the result is. `verify()` re-executes
 # the stored configuration against the same pin and compares every result table
-# row by row. A callback carries state, so it needs a **fresh instance** — the one
-# that just ran has a full history buffer and would not start from the same place.
+# row by row. A callback carries state, so it needs a fresh instance. The one that
+# just ran has a full history buffer and would not start from the same place.
 
 # %%
 verified = best.verify(strategy=Breakout(lookback=best_lookback))
@@ -782,46 +778,44 @@ db.close()
 #
 # # What to take away
 #
-# **The mid is not a price.** Polymarket is a plain limit order book: bids and
-# asks with sizes, and a gap between them where nothing trades. Buy at the ask and
-# sell at the bid and you have paid the spread, whatever the mid did in between.
+# The mid is not a price. Polymarket is a plain limit order book: bids and asks
+# with sizes, and a gap between them where nothing trades. Buy at the ask and sell
+# at the bid and you have paid the spread, whatever the mid did in between.
 #
-# **One number decides whether a strategy works.** Gross edge per share against
-# the half-spread it pays. The sweep varied only trading frequency and the sign of
-# the result flipped exactly where those two crossed. Trading more often did not
-# find more signal; it found the same signal and paid for it repeatedly.
+# One number decides whether a strategy works: gross edge per share against the
+# half-spread it pays. The sweep varied only trading frequency, and the sign of the
+# result flipped exactly where those two crossed. Trading more often did not find
+# more signal. It found the same signal and paid for it repeatedly.
 #
-# **A losing backtest is diagnostic, not just disappointing.** Splitting the loss
-# into gross edge and spread said the idea had something in it and the execution
-# was destroying it — which points at trading less, or trading passively, rather
-# than at abandoning the signal.
+# A losing backtest is diagnostic. Splitting the loss into gross edge and spread
+# said the idea had something in it and the execution was destroying it, which
+# points at trading less, or trading passively, instead of abandoning the signal.
 #
-# **The trial count is part of the result.** The winning setting looked like a 76%
-# chance of being genuine until we admitted five settings were tried, at which
-# point it fell to 29%. That correction costs one line and nobody applies it for
-# you.
+# The trial count is part of the result. The winning setting looked like a 76%
+# chance of being real until we admitted five settings were tried, at which point
+# it fell to 29%. That correction costs one line and nobody applies it for you.
 #
-# **Let the machine hold the caveats.** The settlement gate refused to value
-# positions whose outcomes were not yet knowable, `expiration_ns` refused 70
-# orders in a market that had already closed, the pin makes every run read
-# identical bytes, and `report()` puts the fidelity warning at the top of the page
-# rather than in a footnote the author has to remember.
+# Let the machine hold the caveats. The settlement gate refused to value positions
+# whose outcomes were not yet knowable, `expiration_ns` refused 70 orders in a
+# market that had already closed, the pin makes every run read identical bytes, and
+# `report()` puts the fidelity warning at the top of the page instead of in a
+# footnote the author has to remember.
 #
 # ## Where to go next
 #
-# Things this tutorial deliberately left out, each worth its own article:
+# Four things this tutorial deliberately left out:
 #
-# - **Signals tables versus callbacks.** A strategy can also be expressed as a
+# - **Signals tables versus callbacks:** a strategy can also be expressed as a
 #   table of timestamped order intents. That form gives up path-dependence but
 #   gains a content hash, which unlocks trial deduplication and `backtest.study`
-#   parameter searches — neither of which accepts a callback. The sweep above
+#   parameter searches, neither of which accepts a callback. The sweep above
 #   would have been a one-liner in that form.
-# - **Execution as a variable.** The same strategy under added latency, or posting
+# - **Execution as a variable:** the same strategy under added latency, or posting
 #   passively instead of crossing, moves the result more than most strategy
 #   changes do.
 # - **Maker strategies and queue position**, which need delta-level data rather
 #   than the periodic snapshots used here. The engine refuses a
-#   `queue_position=True` claim on this capture rather than inventing a number.
+#   `queue_position=True` claim on this capture instead of inventing a number.
 # - **Both sides of the book**, which would make the YES/NO parity trade testable.
 #
 # The cookbook this article is drawn from is at
