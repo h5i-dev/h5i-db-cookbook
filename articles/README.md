@@ -10,12 +10,12 @@ source of truth, and the `.ipynb` beside it is generated and executed from it.
 
 | Article | What it covers |
 |---|---|
-| [Practical backtesting for Polymarket](practical_backtesting_for_polymarket.ipynb) | Order-book mechanics, one breakout strategy written from scratch and traded four ways on a fifteen-event toy market, then the same function on real tick-level Polymarket books |
+| [Practical backtesting for Polymarket](practical_backtesting_for_polymarket.ipynb) | Real tick-level Polymarket books into a database, a breakout strategy written as an event-driven callback, and what its result actually says |
 
-The Polymarket notebook is around 900 KB, larger than any recipe, because it
-embeds two `result.report()` pages as iframes. That is deliberate: the report is
-part of what the article is arguing for. The same pages are written to
-`data/cache/` as standalone HTML files, which are gitignored.
+The Polymarket notebook is around 600 KB, larger than any recipe, because it
+embeds a `result.report()` page as an iframe. That is deliberate: the report is
+part of what the article is arguing for. The same page is written to
+`data/cache/` as a standalone HTML file, which is gitignored.
 
 ## Building
 
