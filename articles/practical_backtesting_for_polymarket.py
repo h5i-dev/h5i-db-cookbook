@@ -128,11 +128,22 @@ print(f"  first bid  {event['bids'][0]}  (price and size arrive as strings)")
 # | `end_date` | `string` | ISO-8601, when the market closes |
 # | `clob_token_id_yes` / `_no` | `string` | the per-outcome token identifiers |
 # | `target` | `int8` | 1 = YES wins, 0 = NO wins, null = not yet resolved |
+#
+# Two of those are identifiers rather than data, and both matter at ingest.
+# `condition_id` names the market, and appears in the book capture as `market_id`.
+# The token ids name the two sides of it, and are what an individual book message
+# is matched against. Both are long enough to wreck a table layout, so the preview
+# truncates them.
 
 # %%
 targets = pq.read_table(targets_path).to_pandas()
 print(f"{len(targets):,} rows x {targets.shape[1]} columns")
-targets[["question", "end_date", "closed", "volume", "target"]].head()
+print(f"condition_id is {targets.condition_id.str.len().max()} characters, "
+      f"a token id up to {targets.clob_token_id_yes.str.len().max()}")
+targets.assign(
+    condition_id=targets.condition_id.str[:18] + "...",
+    clob_token_id_yes=targets.clob_token_id_yes.str[:14] + "...",
+)[["condition_id", "question", "end_date", "clob_token_id_yes", "target"]].head()
 
 # %% [markdown]
 # We need markets present in the capture *and* resolved in the labels, and among
@@ -156,9 +167,13 @@ print(chosen[["question", "snapshot_rows", "end_date", "target"]].to_string(inde
 #
 # Two declarations do the whole job.
 #
-# `MarketSpec` describes each contract. `outcome_labels` and `tokens` are paired
-# **positionally**, so the YES token must sit at the same index as the `YES` label.
-# Get that backwards and every fill is attributed to the wrong side.
+# `MarketSpec` describes each contract, and it is where the two identifiers above
+# get their meaning. `instrument_id` is whatever you choose to call the market;
+# passing `condition_id` is what makes `book_deltas.instrument_id` join back to the
+# label file later. `outcome_labels` and `tokens` are paired **positionally**, so
+# the YES token must sit at the same index as the `YES` label, and a book message
+# carrying that token becomes `outcome=0`. Get the pairing backwards and every fill
+# is attributed to the wrong side.
 # `settlement_observable_ns` is when the outcome became *knowable*, and the engine
 # refuses to settle a position unless the replay actually reached that instant.
 # That one field stops the most common form of accidental lookahead in
