@@ -1,18 +1,18 @@
 # %% [markdown]
 # # Practical backtesting for Polymarket, with h5i-db
 #
-# Prediction markets are the friendliest asset class to reason about and one of
-# the least forgiving to backtest. A Polymarket share pays exactly one dollar if
-# the event happens and zero if it does not, so the price is a probability, the
-# most you can lose is what you paid, and every profit-and-loss question has an
-# arithmetic answer rather than a modelling one.
+# The companion article ended on the sentence this notebook starts from:
 #
-# That clarity is exactly what makes the failure mode easy to walk into. Because
-# the payoff is obvious, people write backtests that quietly assume they bought at
-# the price on the screen — and the entire difference between a strategy that
-# works on paper and one that works in an account lives in that assumption.
+# > That gap between the displayed probability and the price at which a strategy
+# > can really trade is where realistic backtesting begins.
 #
-# This is a first tutorial, and it does three things, all on real data:
+# So this picks up there. It assumes you already know what a YES token is, why
+# YES plus NO must sum to a dollar, how a limit order book turns competing orders
+# into a price, and why "the price" is at least five different numbers depending
+# on which question you are asking. If any of that is unfamiliar, read section 1
+# of that article first — none of it is repeated here.
+#
+# What follows is the practical half, and it does three things on real data:
 #
 # 1. **Get real Polymarket order books into a database** — a tick-level capture of
 #    real markets with real resolved outcomes.
@@ -26,29 +26,6 @@
 # Nothing here needs a server or an account: it is a directory on disk and a
 # Python import.
 
-# %% [markdown]
-# ## Vocabulary, once, up front
-#
-# Prediction markets borrow their jargon from equities trading, and most of it is
-# obvious once someone says it out loud.
-#
-# | term | meaning |
-# |---|---|
-# | **share / contract** | the tradeable unit; one YES share pays \$1.00 if the event happens, \$0.00 otherwise |
-# | **YES / NO token** | the two sides of a binary market, each separately tradeable |
-# | **price** | what one share costs, between 0 and 1, which is also the market's implied probability |
-# | **order book (CLOB)** | the list of everyone's resting buy and sell orders, sorted by price |
-# | **bid** | the highest price anyone is currently willing to *pay* |
-# | **ask** | the lowest price anyone is currently willing to *sell* at |
-# | **spread** | ask minus bid: the gap between them, and the cost of an instant round trip |
-# | **mid** | the midpoint `(bid + ask) / 2`, the usual "the price is X" number |
-# | **depth / size** | how many shares are resting at a given price |
-# | **maker** | someone who posts an order and waits |
-# | **taker** | someone who crosses the spread and trades immediately |
-# | **fill** | an execution: the price and quantity you actually got |
-# | **round trip** | one buy and the sell that closes it, which is where costs are paid |
-# | **resolution** | the outcome being finalised, after which shares pay \$1 or \$0 |
-# | **gross edge** | what a strategy would have made if trading were free |
 
 # %%
 import collections
@@ -71,22 +48,6 @@ print(f"h5i-db {h5i_db.__version__}")
 # ---
 #
 # # 1. Real Polymarket books
-#
-# ## What you are buying
-#
-# Polymarket runs binary event markets. Behind a question like *"Will Michael B.
-# Jordan win Best Actor at the 98th Academy Awards?"* there are two tokens, YES
-# and NO, and each is an ordinary tradeable asset with its own order book. When
-# the event resolves, one is worth exactly \$1.00 and the other exactly \$0.00,
-# forever.
-#
-# So if YES trades at 0.62, the market is saying the event has a 62% chance, and a
-# share costs 62 cents to win a dollar. Two things follow immediately. **Your
-# maximum loss is the price you paid** — there is no leverage and no margin call.
-# And **YES plus NO must sum to one**, because anyone can deposit \$1 to mint one
-# of each, or hand back one of each to redeem \$1. If YES ever traded at 0.62
-# while NO traded at 0.35 you could buy both for \$0.97, redeem the pair for
-# \$1.00, and pocket three cents with no view on the Oscars at all.
 #
 # ## The data
 #
@@ -281,155 +242,13 @@ book.to_pandas().head()
 # %% [markdown]
 # ---
 #
-# # 2. What a trade costs
+# # 2. What these particular books cost to trade
 #
-# Before writing a strategy it is worth five minutes on the thing that decides
-# whether any strategy works. Below is one real book from the capture, drawn the
-# way a trader reads it: asks above, bids below, each bar scaled to the size
-# resting at that level.
-
-# %%
-def find_book(path, keep, *, levels=4, price_band=(0.3, 0.7), max_spread=0.005):
-    """First YES snapshot in `keep` that is liquid and tightly quoted."""
-    reader = pq.ParquetFile(path)
-    for batch in reader.iter_batches(batch_size=8000, columns=["market_id", "data"]):
-        frame = batch.to_pandas()
-        for market_id, payload in zip(frame.market_id, frame.data):
-            if market_id not in keep:
-                continue
-            event = json.loads(payload)
-            if event.get("side") != "YES":
-                continue
-            bids = sorted(((float(p), float(s)) for p, s in event["bids"]), reverse=True)
-            asks = sorted((float(p), float(s)) for p, s in event["asks"])
-            if len(bids) < levels or len(asks) < levels:
-                continue
-            mid = (asks[0][0] + bids[0][0]) / 2
-            if price_band[0] < mid < price_band[1] and asks[0][0] - bids[0][0] <= max_spread:
-                return market_id, bids[:levels], asks[:levels]
-    raise LookupError("no book matched")
-
-
-questions = {spec.instrument_id: spec.metadata["question"] for spec in specs}
-market_id, bids, asks = find_book(snapshots_path, set(chosen.condition_id))
-ladder = pd.DataFrame(
-    [{"side": "ask", "price": price, "size": size} for price, size in asks]
-    + [{"side": "bid", "price": price, "size": size} for price, size in bids]
-)
-best_bid, best_ask = max(bids)[0], min(asks)[0]
-mid = (best_bid + best_ask) / 2
-print(questions[market_id])
-print(f"best bid {best_bid:.4f}   best ask {best_ask:.4f}   "
-      f"mid {mid:.4f}   spread {best_ask - best_bid:.4f}")
-ladder
-
-# %%
-def ladder_html(levels: pd.DataFrame, heading: str) -> HTML:
-    """Draw a book as a price ladder: asks above, bids below, bars scaled to size."""
-    asks = levels[levels.side == "ask"].sort_values("price", ascending=False)
-    bids = levels[levels.side == "bid"].sort_values("price", ascending=False)
-    widest = levels["size"].max()
-
-    def row(record, tint: str) -> str:
-        width = record.size / widest * 100
-        return (
-            "<tr>"
-            f'<td style="padding:2px 10px;opacity:.55;font-size:.85em">{record.side.upper()}</td>'
-            '<td style="padding:2px 10px;text-align:right;'
-            f'font-variant-numeric:tabular-nums">{record.price:.4f}</td>'
-            '<td style="padding:2px 10px;text-align:right;opacity:.7;'
-            f'font-variant-numeric:tabular-nums">{record.size:,.0f}</td>'
-            f'<td style="padding:2px 10px;width:55%"><div style="background:{tint};'
-            f'width:{width:.1f}%;height:14px;border-radius:3px"></div></td>'
-            "</tr>"
-        )
-
-    body = "".join(row(record, "rgba(192,57,43,.55)") for record in asks.itertuples())
-    body += (
-        '<tr><td colspan="4" style="padding:6px 10px;border-top:1px dashed currentColor;'
-        'border-bottom:1px dashed currentColor;opacity:.65;font-size:.85em">'
-        f"spread {asks.price.min() - bids.price.max():.4f} &nbsp;·&nbsp; mid "
-        f"{(asks.price.min() + bids.price.max()) / 2:.4f} &nbsp;·&nbsp; "
-        "nothing trades in here</td></tr>"
-    )
-    body += "".join(row(record, "rgba(44,127,184,.55)") for record in bids.itertuples())
-    return HTML(
-        '<div style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;max-width:620px">'
-        f'<div style="padding:4px 10px;opacity:.75;font-size:.9em">{heading}</div>'
-        f'<table style="border-collapse:collapse;width:100%">{body}</table></div>'
-    )
-
-
-ladder_html(ladder, f"{questions[market_id][:56]} — YES book")
-
-# %% [markdown]
-# Three things to read off it.
+# The article laid out the mechanics: cross the spread and you pay it, and a large
+# order walks up the book to worse levels. What it could not say is how big those
+# costs are on any real market, because that is a property of the data. Here it is
+# for this capture.
 #
-# **Nothing trades in the gap.** There is no price both a buyer and a seller
-# accept. Everyone would quote this market as "about 0.465" — the mid — but that
-# is a price at which precisely nothing happens.
-#
-# **You choose which side of the spread to be on.** *Take*: send a market buy,
-# cross to the best ask, own shares within a second. Or *make*: post a limit buy at
-# the bid and wait for a seller to come to you. Taking costs money and is certain;
-# making saves money and is not.
-#
-# **Depth is finite and small.** Look at the size column against the prices. Ask
-# for more than what is resting at the touch and you walk into worse levels.
-#
-# ## Walking an order through the book
-#
-# A market buy consumes ask levels from the best price upward until it has what it
-# asked for. That is the entire matching rule for a taker order.
-
-# %%
-def walk_the_book(levels: pd.DataFrame, side: str, quantity: float) -> pd.DataFrame:
-    """Consume levels best-price-first and return the fills a taker would get."""
-    # A buyer consumes asks cheapest first; a seller consumes bids dearest first.
-    book = levels[levels.side == ("ask" if side == "buy" else "bid")]
-    book = book.sort_values("price", ascending=(side == "buy"))
-    remaining, fills = quantity, []
-    for level in book.itertuples():
-        if remaining <= 0:
-            break
-        taken = min(remaining, level.size)
-        fills.append({"price": level.price, "quantity": taken, "cost": taken * level.price})
-        remaining -= taken
-    return pd.DataFrame(fills)
-
-
-for size in (100.0, 400.0, 800.0):
-    fills = walk_the_book(ladder, "buy", size)
-    got = fills.quantity.sum()
-    average = fills.cost.sum() / got
-    print(f"market buy {size:>6.0f} shares -> {len(fills)} level(s), filled {got:.0f}, "
-          f"average {average:.4f}, slippage vs mid {(average - mid) * 100:+.2f} cents")
-
-# %% [markdown]
-# Now the number that governs everything: the cost of a **round trip**. Buy at the
-# ask, sell later at the bid with the book unchanged, and you have paid the full
-# spread for the privilege of having had a position.
-
-# %%
-QUANTITY = 100.0
-entry = walk_the_book(ladder, "buy", QUANTITY)
-exit_ = walk_the_book(ladder, "sell", QUANTITY)
-entry_price = entry.cost.sum() / entry.quantity.sum()
-exit_price = exit_.cost.sum() / exit_.quantity.sum()
-print(f"buy  {QUANTITY:.0f} shares at an average of {entry_price:.4f}")
-print(f"sell {QUANTITY:.0f} shares at an average of {exit_price:.4f}")
-print(f"\nnet per share       {exit_price - entry_price:+.4f}")
-print(f"as a share of cost  {(exit_price - entry_price) / entry_price * 100:+.2f}%")
-print(f"\nthe mid must move {(entry_price - exit_price) * 100:.2f} cents in your")
-print("favour before this trade breaks even, and the mid has not moved at all")
-
-# %% [markdown]
-# That is the hurdle, and it is why most prediction-market strategies fail for
-# reasons that have nothing to do with forecasting. A rule that trades ten times a
-# day has to be right by more than that, ten times a day, just to stay level.
-#
-# How big the hurdle is depends heavily on where in the book you trade, so it is
-# worth measuring across the whole panel rather than on one snapshot.
 # `backtest.quote_panel` collapses `book_deltas` to the top of book — one row per
 # instrument per instant, which is also the shape the strategy will see.
 
@@ -438,6 +257,58 @@ panel = backtest.quote_panel(db, snapshot="real-v1")
 panel["spread"] = panel.ask - panel.bid
 panel["mid"] = (panel.bid + panel.ask) / 2
 print(f"{len(panel):,} quotes across {panel.instrument_id.nunique()} markets\n")
+print(panel[["bid", "ask", "spread", "mid"]].describe().round(4).to_string())
+
+# %% [markdown]
+# One book from the capture, drawn as the ladder from the article. It has two rows
+# rather than five because `max_levels=1` truncated the ingest to the touch, which
+# is all a taker at this size ever reaches — the point here is that the numbers
+# came out of a real venue feed rather than an example.
+
+# %%
+questions = {spec.instrument_id: spec.metadata["question"] for spec in specs}
+sample = panel.loc[panel.spread.idxmin()]
+depth = pd.DataFrame(
+    [
+        {"side": "ask", "price": sample.ask, "size": sample.ask_size},
+        {"side": "bid", "price": sample.bid, "size": sample.bid_size},
+    ]
+)
+heading = (f"{questions[sample.instrument_id][:48]} — YES book at "
+           f"{sample.ts:%H:%M:%S}")
+display(HTML(
+    '<div style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;max-width:560px">'
+    f'<div style="padding:4px 10px;opacity:.75;font-size:.9em">{heading}</div>'
+    '<table style="border-collapse:collapse;width:100%">'
+    + "".join(
+        '<tr>'
+        f'<td style="padding:3px 10px;opacity:.55;font-size:.85em">{row.side.upper()}</td>'
+        '<td style="padding:3px 10px;text-align:right;font-variant-numeric:tabular-nums">'
+        f'{row.price:.4f}</td>'
+        '<td style="padding:3px 10px;text-align:right;opacity:.7;'
+        f'font-variant-numeric:tabular-nums">{row.size:,.0f}</td>'
+        '<td style="padding:3px 10px;width:55%"><div style="background:'
+        f'{"rgba(192,57,43,.55)" if row.side == "ask" else "rgba(44,127,184,.55)"};'
+        f'width:{row.size / depth["size"].max() * 100:.1f}%;height:14px;'
+        'border-radius:3px"></div></td></tr>'
+        + ('<tr><td colspan="4" style="padding:6px 10px;border-top:1px dashed '
+           'currentColor;border-bottom:1px dashed currentColor;opacity:.65;'
+           f'font-size:.85em">spread {sample.spread:.4f} &nbsp;·&nbsp; mid '
+           f'{sample.mid:.4f} &nbsp;·&nbsp; nothing trades in here</td></tr>'
+           if row.side == "ask" else "")
+        for row in depth.itertuples()
+    )
+    + "</table></div>"
+))
+
+# %% [markdown]
+# ## The hurdle, by price level
+#
+# Half the spread is what a taker gives up on each leg, so it is the natural unit
+# for "what does trading here cost". Expressed as a percentage of the price paid,
+# it varies across the book by more than two orders of magnitude.
+
+# %%
 levels = panel.assign(level=lambda frame: frame.mid.round(1)).groupby("level").agg(
     quotes=("mid", "size"),
     mean_mid=("mid", "mean"),
@@ -449,11 +320,15 @@ levels["half_spread_pct_of_mid"] = levels.half_spread / levels.mean_mid * 100
 print(levels.round(4).to_string())
 
 # %% [markdown]
-# The shape is the point. Crossing the spread costs under half a percent in the
-# crowded middle of the book and near the certain end, and it explodes on cheap
-# contracts, where one round trip costs a double-digit percentage of the position
-# before anything has happened. A longshot strategy has to be right about
-# *direction* far more often than it has to be right about *probability*.
+# The shape is the point. Crossing the spread costs well under half a percent in
+# the crowded middle of the book and near the certain end, and it explodes on
+# cheap contracts, where a single round trip costs a double-digit percentage of
+# the position before anything has happened. A longshot strategy has to be right
+# about *direction* far more often than it has to be right about *probability*.
+#
+# Keep the middle-of-the-book number in mind, because the strategy below trades
+# there and we will be comparing its earnings directly against it: roughly
+# **0.14 cents a share**, paid on entry and again on exit.
 #
 # One more cost, briefly. Polymarket's headline trading fee has historically been
 # zero, which is unusual and genuinely favourable, so every run below charges
