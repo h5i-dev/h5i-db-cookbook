@@ -11,11 +11,17 @@ source of truth, and the `.ipynb` beside it is generated and executed from it.
 | Article | What it covers |
 |---|---|
 | [Practical backtesting for Polymarket](practical_backtesting_for_polymarket.ipynb) | Real tick-level Polymarket books into a database, a breakout strategy written as an event-driven callback, and what its result actually says |
+| [Practical backtesting for Kalshi](practical_backtesting_for_kalshi.ipynb) | Kalshi's own public API as a data source, the quadratic fee that dominates the spread, and a rule with a real edge that never clears the toll |
 
-The Polymarket notebook is around 600 KB, larger than any recipe, because it
-embeds a `result.report()` page as an iframe. That is deliberate: the report is
-part of what the article is arguing for. The same page is written to
-`data/cache/` as a standalone HTML file, which is gitignored.
+Read them in either order. They share the callback strategy and the
+gross-edge decomposition, and differ in the venue, the data source and the
+conclusion: on Polymarket the whole cost is spread, on Kalshi the fee is the
+larger half of it.
+
+Both notebooks are around 600 KB, larger than any recipe, because each embeds a
+`result.report()` page as an iframe. That is deliberate: the report is part of
+what the articles are arguing for. The same page is written to `data/cache/` as
+a standalone HTML file, which is gitignored.
 
 ## Building
 
@@ -26,13 +32,22 @@ from pathlib import Path
 sys.path.insert(0, "scripts")
 from build_notebooks import build
 build(Path("articles/practical_backtesting_for_polymarket.py"), execute=True, timeout=1500)
+build(Path("articles/practical_backtesting_for_kalshi.py"), execute=True, timeout=1500)
 EOF
 ```
 
 Run it from the repository root, so `import cookbook_utils` resolves and the
 relative `data/cache/` paths find their inputs.
 
+## Data
+
 Part 3 of the Polymarket article needs the bounded Kaggle sample that recipes
 04/04, 04/05 and 05/08 use. If it is absent the notebook prints the exact
 `kaggle datasets download` commands and stops. That dataset is CC BY-NC 4.0;
 review the licence before using derived work.
+
+The Kalshi article needs no download and no account. It calls three public
+endpoints through `cookbook_utils.kalshi_api`, which caches about 2 MB of
+Parquet under `data/cache/kalshi/`; every re-run after the first is offline.
+The markets it studies have settled, so the data is stable, but Kalshi's API is
+the exchange's and its terms are Kalshi's.

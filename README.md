@@ -156,12 +156,23 @@ refuses to verify.
 | [03 Cross-validation without leakage](notebooks/06_performance_analytics/03_cross_validation_without_leakage.ipynb) | Purged k-fold, embargo, CPCV distributions, walk-forward, then PBO and the deflated Sharpe on the winner |
 | [04 Sweeps, verification, restatements](notebooks/06_performance_analytics/04_sweeps_verification_restatements.ipynb) | `quant.sweep` one fork per trial, provenance digests, and what a vendor revision did to the answer |
 
+## Articles
+
+Longer write-ups drawn from the recipes, each readable start to finish by
+someone who has never seen h5i-db. Both run on real venue data.
+
+| Article | What it covers |
+|---|---|
+| [Practical backtesting for Polymarket](articles/practical_backtesting_for_polymarket.ipynb) | Tick-level Polymarket books into a database, a breakout strategy as an event-driven callback, and what its result actually says |
+| [Practical backtesting for Kalshi](articles/practical_backtesting_for_kalshi.ipynb) | Kalshi's public API as a data source, the quadratic fee that outweighs the spread, and a rule with an edge that never clears the toll |
+
 ## Layout
 
 ```
-cookbook_utils/     shared synthetic-data generators + cached Yahoo downloader
+cookbook_utils/     shared synthetic-data generators + cached market-data fetchers
 notebooks/          66 recipes × (.py source ⇄ executed .ipynb)
 notebooks_ja/       the same 66 recipes, Japanese prose, byte-identical code
+articles/           long-form write-ups, same .py ⇄ .ipynb convention
 GLOSSARY.md         every term the recipes use (GLOSSARY.ja.md in Japanese)
 scripts/            build tooling (py → executed ipynb)
 data/cache/         cached real market data (parquet)
@@ -196,6 +207,25 @@ a depth or queue study needs a captured archive of the kind recipe 05/08 uses.
 `scripts/test_fetch_polymarket.py` covers pagination, retry and backoff, the
 cache, response-shape validation, and whether the mirror it writes is ingestible.
 The transport is injected, so those run offline.
+
+## Fetching your own Kalshi data
+
+Kalshi serves its own history, so `cookbook_utils.kalshi_api` needs no key and
+no mirror script:
+
+```python
+import cookbook_utils as cu
+
+markets = cu.kalshi_markets(["KXHIGHNY-26AUG01"])   # definitions + settled result
+candles = cu.kalshi_candles(markets)                # a minute's closing bid and ask
+tape = cu.kalshi_trades(markets)                    # every print, size and taker side
+```
+
+Each call caches Parquet under `data/cache/kalshi/`, one file per market, so a
+re-run is offline and adding a market costs one request. What the API does not
+serve is depth or book deltas: the candles carry the touch and nothing behind
+it, which bounds what a study over them may claim. The Kalshi article works
+through exactly that.
 
 ## Rebuilding the notebooks
 
