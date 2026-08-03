@@ -30,6 +30,14 @@ from .backtest_data import (
     make_equity_market,
     make_equity_tape,
 )
+from .kalshi_api import (
+    KALSHI_API,
+    TAKER_FEE_RATE as KALSHI_TAKER_FEE_RATE,
+    fetch_markets as kalshi_markets,
+    fetch_candles as kalshi_candles,
+    fetch_trades as kalshi_trades,
+    taker_fee as kalshi_taker_fee,
+)
 from .kaggle_polymarket import (
     DATASET as KAGGLE_POLYMARKET_DATASET,
     LICENSE as KAGGLE_POLYMARKET_LICENSE,
@@ -73,4 +81,10 @@ __all__ = [
     "kaggle_missing_files",
     "kaggle_source_manifest",
     "load_kaggle_sample",
+    "KALSHI_API",
+    "KALSHI_TAKER_FEE_RATE",
+    "kalshi_markets",
+    "kalshi_candles",
+    "kalshi_trades",
+    "kalshi_taker_fee",
 ]
